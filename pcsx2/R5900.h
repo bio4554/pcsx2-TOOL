@@ -376,6 +376,9 @@ extern R5900cpu *Cpu;
 extern R5900cpu intCpu;
 extern R5900cpu recCpu;
 
+// Recompiler: re-check the EE instruction breakpoint configuration after a BPC/IAB/IABM write.
+extern void recCheckInstBreakpointConfig();
+
 enum EE_intProcessStatus
 {
 	INT_NOT_RUNNING = 0,

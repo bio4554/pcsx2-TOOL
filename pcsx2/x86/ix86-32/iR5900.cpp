@@ -104,6 +104,7 @@ static void iBranchTest(u32 newpc = 0xffffffff);
 static void ClearRecLUT(BASEBLOCK* base, int count);
 static u32 scaleblockcycles();
 static void recExitExecution();
+static void recSnapshotInstBreakpointConfig();
 
 #ifdef TRACE_BLOCKS
 static void pauseAAA()
@@ -678,6 +679,8 @@ static void recResetRaw()
 
 	memset(manual_page, 0, sizeof(manual_page));
 	memset(manual_counter, 0, sizeof(manual_counter));
+
+	recSnapshotInstBreakpointConfig();
 }
 
 void recShutdown()
@@ -1664,6 +1667,60 @@ void recMemcheck(u32 op, u32 bits, bool store)
 	}
 }
 
+// EE hardware instruction breakpoints (COP0 BPC/IAB/IABM). Instructions that match the IAB/IABM the
+// code was compiled for get a runtime check in front of them (mode gating and BED are decided at
+// runtime by cpuCheckInstBreakpoint). COP0_WriteDebugReg calls recCheckInstBreakpointConfig, which
+// resets the recompiler when an enabled configuration differs from the compiled one. Disabling
+// needs no reset: stale checks just find IAE clear. Needs proper testing.
+static bool s_recIaeCompiled = false;
+static u32 s_recIabCompiled = 0, s_recIabmCompiled = 0;
+
+static void recSnapshotInstBreakpointConfig()
+{
+	s_recIaeCompiled = (cpuRegs.DBG.n.bpc & BPC_IAE) != 0;
+	s_recIabCompiled = cpuRegs.DBG.n.iab;
+	s_recIabmCompiled = cpuRegs.DBG.n.iabm;
+}
+
+void recCheckInstBreakpointConfig()
+{
+	if (!(cpuRegs.DBG.n.bpc & BPC_IAE))
+		return;
+	if (s_recIaeCompiled && cpuRegs.DBG.n.iab == s_recIabCompiled && cpuRegs.DBG.n.iabm == s_recIabmCompiled)
+		return;
+	recResetEE();
+}
+
+static bool recInstBreakpointNeeded(u32 addr)
+{
+	return s_recIaeCompiled && ((addr ^ s_recIabCompiled) & s_recIabmCompiled) == 0;
+}
+
+// Called from recompiled code with everything flushed. True when the debug exception was taken
+// (cpuRegs.pc is then the vector); otherwise cpuRegs is left as it was.
+static bool recInstBreakpoint(u32 addr, u32 bd)
+{
+	const u32 oldpc = cpuRegs.pc;
+	const int oldbranch = cpuRegs.branch;
+	cpuRegs.pc = addr;
+	cpuRegs.branch = bd;
+	if (cpuCheckInstBreakpoint())
+		return true;
+	cpuRegs.pc = oldpc;
+	cpuRegs.branch = oldbranch;
+	return false;
+}
+
+static void encodeInstBreakpoint(u32 addr, bool delayslot)
+{
+	iFlushCall(FLUSH_EVERYTHING);
+	xFastCall((void*)recInstBreakpoint, addr, delayslot ? 1u : 0u);
+	xTEST(al, al);
+	xForwardJZ32 notTaken;
+	iBranchTest(); // leave the block for the debug vector
+	notTaken.SetTarget();
+}
+
 bool encodeBreakpoint()
 {
 	if (isBreakpointNeeded(pc) != 0)
@@ -1728,6 +1785,10 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 		_clearNeededX86regs();
 		_clearNeededXMMregs();
 	}
+
+	// pc is this instruction's address here, delay slot or not.
+	if (recInstBreakpointNeeded(pc))
+		encodeInstBreakpoint(pc, delayslot);
 
 	s_pCode = (int*)PSM(pc);
 	pxAssert(s_pCode);
