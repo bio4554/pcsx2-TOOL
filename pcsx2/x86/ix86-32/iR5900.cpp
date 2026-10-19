@@ -1667,28 +1667,34 @@ void recMemcheck(u32 op, u32 bits, bool store)
 	}
 }
 
-// EE hardware instruction breakpoints (COP0 BPC/IAB/IABM). Instructions that match the IAB/IABM the
-// code was compiled for get a runtime check in front of them (mode gating and BED are decided at
-// runtime by cpuCheckInstBreakpoint). COP0_WriteDebugReg calls recCheckInstBreakpointConfig, which
-// resets the recompiler when an enabled configuration differs from the compiled one. Disabling
-// needs no reset: stale checks just find IAE clear. Needs proper testing.
+// EE hardware breakpoints (COP0 BPC and the IAB/DAB/DVB register pairs).
+// Instruction: instructions that match the IAB/IABM the code was compiled for get a runtime check
+// in front of them (mode gating and BED are decided at runtime by cpuCheckInstBreakpoint).
+// Data: while DRE or DWE was set at compile time, every load/store gets an inline address filter
+// against DAB/DABM (read at runtime) and a call to cpuCheckDataBreakpoint on a match; loads also
+// get the after-load value check. COP0_WriteDebugReg calls recCheckBreakpointConfig, which resets
+// the recompiler when an enabled configuration isn't covered by the compiled one. Disabling needs
+// no reset: stale checks just find the enables clear. Needs proper testing.
 static bool s_recIaeCompiled = false;
 static u32 s_recIabCompiled = 0, s_recIabmCompiled = 0;
+static bool s_recDataBpCompiled = false;
 
 static void recSnapshotInstBreakpointConfig()
 {
 	s_recIaeCompiled = (cpuRegs.DBG.n.bpc & BPC_IAE) != 0;
 	s_recIabCompiled = cpuRegs.DBG.n.iab;
 	s_recIabmCompiled = cpuRegs.DBG.n.iabm;
+	s_recDataBpCompiled = (cpuRegs.DBG.n.bpc & (BPC_DRE | BPC_DWE)) != 0;
 }
 
-void recCheckInstBreakpointConfig()
+void recCheckBreakpointConfig()
 {
-	if (!(cpuRegs.DBG.n.bpc & BPC_IAE))
-		return;
-	if (s_recIaeCompiled && cpuRegs.DBG.n.iab == s_recIabCompiled && cpuRegs.DBG.n.iabm == s_recIabmCompiled)
-		return;
-	recResetEE();
+	const u32 bpc = cpuRegs.DBG.n.bpc;
+	const bool instMissing = (bpc & BPC_IAE) &&
+		!(s_recIaeCompiled && cpuRegs.DBG.n.iab == s_recIabCompiled && cpuRegs.DBG.n.iabm == s_recIabmCompiled);
+	const bool dataMissing = (bpc & (BPC_DRE | BPC_DWE)) && !s_recDataBpCompiled;
+	if (instMissing || dataMissing)
+		recResetEE();
 }
 
 static bool recInstBreakpointNeeded(u32 addr)
@@ -1718,6 +1724,66 @@ static void encodeInstBreakpoint(u32 addr, bool delayslot)
 	xTEST(al, al);
 	xForwardJZ32 notTaken;
 	iBranchTest(); // leave the block for the debug vector
+	notTaken.SetTarget();
+}
+
+// Data breakpoint helpers, called from recompiled code with everything flushed. `addrbd` is the
+// instruction's address with bit 0 set when it sits in a delay slot.
+static bool recDataBreakpoint(u32 addrbd, u32 code)
+{
+	const u32 oldpc = cpuRegs.pc;
+	const int oldbranch = cpuRegs.branch;
+	cpuRegs.pc = addrbd & ~3u;
+	cpuRegs.branch = addrbd & 1;
+	if (cpuCheckDataBreakpoint(code))
+		return true;
+	cpuRegs.pc = oldpc;
+	cpuRegs.branch = oldbranch;
+	return false;
+}
+
+static bool recDataBreakpointAfterLoad(u32 addrbd, u32 code)
+{
+	const u32 addr = addrbd & ~3u;
+	const u32 oldpc = cpuRegs.pc;
+	cpuRegs.pc = addr + 4; // the next instruction (unused when deferred)
+	if (cpuCheckDataBreakpointAfterLoad(code, addr, (addrbd & 1) != 0))
+		return true;
+	cpuRegs.pc = oldpc;
+	return false;
+}
+
+// Before a load/store: inline filter ((ea ^ DAB) & DABM) == 0, then the full check.
+static void encodeDataBreakpoint(u32 addr, u32 code, bool delayslot)
+{
+	iFlushCall(FLUSH_EVERYTHING);
+	_eeMoveGPRtoR(eax, (code >> 21) & 0x1F, false);
+	if (static_cast<s16>(code) != 0)
+		xADD(eax, static_cast<s16>(code));
+	if ((GetInstruction(code).flags & MEMTYPE_MASK) == MEMTYPE_QWORD)
+		xAND(eax, ~0x0F);
+	xXOR(eax, ptr32[&cpuRegs.DBG.n.dab]);
+	xAND(eax, ptr32[&cpuRegs.DBG.n.dabm]);
+	xForwardJNZ32 noMatch;
+	xFastCall((void*)recDataBreakpoint, addr | (delayslot ? 1u : 0u), code);
+	xTEST(al, al);
+	xForwardJZ32 notTaken;
+	iBranchTest(); // leave the block for the debug vector
+	noMatch.SetTarget();
+	notTaken.SetTarget();
+}
+
+// After a load: the data value check, when the pre-check armed it.
+static void encodeDataBreakpointAfterLoad(u32 addr, u32 code, bool delayslot)
+{
+	iFlushCall(FLUSH_EVERYTHING);
+	xCMP(ptr8[&g_cpuDbgLoadArmed], 0);
+	xForwardJZ32 notArmed;
+	xFastCall((void*)recDataBreakpointAfterLoad, addr | (delayslot ? 1u : 0u), code);
+	xTEST(al, al);
+	xForwardJZ32 notTaken;
+	iBranchTest(); // leave the block for the debug vector
+	notArmed.SetTarget();
 	notTaken.SetTarget();
 }
 
@@ -1789,6 +1855,11 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	// pc is this instruction's address here, delay slot or not.
 	if (recInstBreakpointNeeded(pc))
 		encodeInstBreakpoint(pc, delayslot);
+	const u32 insnpc = pc;
+	const u32 insncode = *(u32*)PSM(pc);
+	const u32 dataBpFlags = s_recDataBpCompiled ? (GetInstruction(insncode).flags & (IS_LOAD | IS_STORE)) : 0;
+	if (dataBpFlags)
+		encodeDataBreakpoint(insnpc, insncode, delayslot);
 
 	s_pCode = (int*)PSM(pc);
 	pxAssert(s_pCode);
@@ -1941,6 +2012,9 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 		_clearNeededXMMregs();
 	}
 	_validateRegs();
+
+	if (dataBpFlags & IS_LOAD)
+		encodeDataBreakpointAfterLoad(insnpc, insncode, delayslot);
 
 	if (delayslot)
 	{

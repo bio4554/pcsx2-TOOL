@@ -209,6 +209,111 @@ bool cpuCheckInstBreakpoint()
 	return true;
 }
 
+// Data breakpoints (manual 9.2.3-9.2.5, figure 9-4). An address match is precise: the exception is
+// taken before the load/store. A value match on a store is precise too (the value is in a register).
+// A value match on a load needs the loaded data, so the load completes first and the exception is
+// taken before the next instruction: the hardware's "imprecise" case. Its exact skid on hardware is
+// unknown (TOOL check); SWC1/SQC2 value hits, imprecise on hardware, are precise here.
+bool g_cpuDbgLoadArmed = false; // read by recompiled code
+static u32 s_dbgLoadArmedPc = 0;
+static bool s_dbgPending = false;
+
+// Effective address as the breakpoint unit sees it (quadword accesses ignore the low 4 bits).
+static u32 cpuDataBreakpointAddress(u32 code)
+{
+	u32 ea = cpuRegs.GPR.r[(code >> 21) & 31].UL[0] + static_cast<s32>(static_cast<s16>(code));
+	if ((R5900::GetInstruction(code).flags & MEMTYPE_MASK) == MEMTYPE_QWORD)
+		ea &= ~0xFu;
+	return ea;
+}
+
+// The 32-bit value compared with DVB: a store's source register, or (after a load) its destination.
+// The low 32 bits in every case; LB/LH are already sign-extended, LWL/LDL already merged.
+static u32 cpuDataBreakpointValue(u32 code)
+{
+	const u32 rt = (code >> 16) & 31;
+	switch (code >> 26)
+	{
+		case 0x31: // LWC1
+		case 0x39: // SWC1
+			return fpuRegs.fpr[rt].UL;
+		case 0x36: // LQC2
+		case 0x3E: // SQC2
+			return VU0.VF[rt].UL[0];
+		default:
+			return cpuRegs.GPR.r[rt].UL[0];
+	}
+}
+
+static bool cpuDataBreakpointHit(bool store, bool bd)
+{
+	cpuRegs.DBG.n.bpc |= store ? BPC_DWB : BPC_DRB;
+	if (cpuRegs.DBG.n.bpc & BPC_BED)
+		return false;
+	cpuDebugException(bd);
+	return true;
+}
+
+// Before the load/store `code` at cpuRegs.pc. Returns true when the debug exception was taken
+// instead of the access.
+bool cpuCheckDataBreakpoint(u32 code)
+{
+	g_cpuDbgLoadArmed = false;
+	const u32 bpc = cpuRegs.DBG.n.bpc;
+	const bool store = (R5900::GetInstruction(code).flags & IS_STORE) != 0;
+	if (!(bpc & (store ? BPC_DWE : BPC_DRE)) || !(bpc & cpuBreakpointModeBit(BPC_DXE, BPC_DKE, BPC_DSE, BPC_DUE)))
+		return false;
+	const u32 mask = cpuRegs.DBG.n.dabm;
+	if ((cpuDataBreakpointAddress(code) & mask) != (cpuRegs.DBG.n.dab & mask))
+		return false;
+
+	if (bpc & BPC_DVE)
+	{
+		if (!store)
+		{
+			g_cpuDbgLoadArmed = true;
+			s_dbgLoadArmedPc = cpuRegs.pc;
+			return false;
+		}
+		const u32 vmask = cpuRegs.DBG.n.dvbm;
+		if ((cpuDataBreakpointValue(code) & vmask) != (cpuRegs.DBG.n.dvb & vmask))
+			return false;
+	}
+	return cpuDataBreakpointHit(store, cpuRegs.branch != 0);
+}
+
+// After the load `code` at `loadpc` completed (cpuRegs.pc must then be the next instruction).
+// `deferred`: the load was in a delay slot, so the exception waits for the next event test,
+// once the branch has reached its target. Returns true when the exception was taken now.
+bool cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc, bool deferred)
+{
+	if (!g_cpuDbgLoadArmed)
+		return false;
+	g_cpuDbgLoadArmed = false;
+	if (s_dbgLoadArmedPc != loadpc)
+		return false;
+	const u32 vmask = cpuRegs.DBG.n.dvbm;
+	if ((cpuDataBreakpointValue(code) & vmask) != (cpuRegs.DBG.n.dvb & vmask))
+		return false;
+
+	cpuRegs.DBG.n.bpc |= BPC_DRB;
+	if (cpuRegs.DBG.n.bpc & BPC_BED)
+		return false;
+	if (deferred)
+	{
+		s_dbgPending = true;
+		cpuRegs.nextEventCycle = 0; // force an event test at the end of the branch
+		return false;
+	}
+	cpuDebugException(false);
+	return true;
+}
+
+void cpuDisarmDataBreakpoint()
+{
+	g_cpuDbgLoadArmed = false;
+}
+
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
 {
 	// Avoid too much spamming on the interpreter
@@ -412,6 +517,14 @@ __fi void _cpuEventTest_Shared()
 	eeEventTestIsActive = true;
 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
 	cpuRegs.lastEventCycle = cpuRegs.cycle;
+
+	// A data value breakpoint hit by a load in a delay slot, taken now that cpuRegs.pc is the
+	// branch's destination (see cpuCheckDataBreakpointAfterLoad).
+	if (s_dbgPending)
+	{
+		s_dbgPending = false;
+		cpuDebugException(false);
+	}
 	// ---- INTC / DMAC (CPU-level Exceptions) -----------------
 	// Done first because exceptions raised during event tests need to be postponed a few
 	// cycles (fixes Grandia II [PAL], which does a spin loop on a vsync and expects to

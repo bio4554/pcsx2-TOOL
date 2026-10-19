@@ -376,8 +376,8 @@ extern R5900cpu *Cpu;
 extern R5900cpu intCpu;
 extern R5900cpu recCpu;
 
-// Recompiler: re-check the EE instruction breakpoint configuration after a BPC/IAB/IABM write.
-extern void recCheckInstBreakpointConfig();
+// Recompiler: re-check the EE hardware breakpoint configuration after a BPC/IAB/IABM write.
+extern void recCheckBreakpointConfig();
 
 enum EE_intProcessStatus
 {
@@ -423,6 +423,10 @@ extern void cpuReset();
 extern void cpuException(u32 code, u32 bd);
 extern void cpuDebugException(bool bd);
 extern bool cpuCheckInstBreakpoint();
+extern bool cpuCheckDataBreakpoint(u32 code);
+extern bool g_cpuDbgLoadArmed; // a load matched DAB while DVE is set; value check pending
+extern bool cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc, bool deferred);
+extern void cpuDisarmDataBreakpoint();
 extern void cpuTlbMissR(u32 addr, u32 bd);
 extern void cpuTlbMissW(u32 addr, u32 bd);
 extern void cpuTestHwInts();

@@ -184,6 +184,16 @@ static void execI()
 	cpuRegs.code = memRead32( pc );
 
 	const OPCODE& opcode = GetCurrentInstruction();
+
+	// EE hardware data breakpoint (COP0 BPC/DAB/DABM/DVB/DVBM), checked before the access.
+	const bool dataBreakpoint = (cpuRegs.DBG.n.bpc & (BPC_DRE | BPC_DWE)) && (opcode.flags & (IS_LOAD | IS_STORE));
+	if (dataBreakpoint)
+	{
+		cpuRegs.pc = pc;
+		if (cpuCheckDataBreakpoint(cpuRegs.code))
+			return;
+		cpuRegs.pc = pc + 4;
+	}
 #if 0
 	static long int runs = 0;
 	//use this to find out what opcodes your game uses. very slow! (rama)
@@ -221,6 +231,16 @@ static void execI()
 	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
 
 	opcode.interpret();
+
+	// A load armed for a data value breakpoint: compare the loaded value, unless the load raised
+	// an exception of its own.
+	if (dataBreakpoint && g_cpuDbgLoadArmed)
+	{
+		if (cpuRegs.pc == pc + 4)
+			cpuCheckDataBreakpointAfterLoad(cpuRegs.code, pc, cpuRegs.branch != 0);
+		else
+			cpuDisarmDataBreakpoint();
+	}
 }
 
 static __fi void _doBranch_shared(u32 tar)

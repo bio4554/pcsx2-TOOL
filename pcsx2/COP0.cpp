@@ -121,7 +121,7 @@ void COP0_WriteDebugReg(u32 value, u32 sel)
 	COP0_LOG("MTC0 debug register %u = %08x", sel & 7, cpuRegs.DBG.r[sel & 7]);
 
 	if ((sel & 7) <= 3 && Cpu == &recCpu)
-		recCheckInstBreakpointConfig();
+		recCheckBreakpointConfig();
 }
 extern int branch;
 __fi void COP0_UpdatePCCR()
