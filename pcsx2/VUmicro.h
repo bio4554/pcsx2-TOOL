@@ -167,8 +167,10 @@ extern recMicroVU1 CpuMicroVU1;
 extern BaseVUmicroCPU* CpuVU0;
 extern BaseVUmicroCPU* CpuVU1;
 
-// TOOL: VU1 runs at the bus clock, half the EE's, so one VU1 cycle is 2 EE cycles (shift 1).
-// PCSX2 counts them 1:1 (shift 0). Set at VM reset (Pif::Reset); needs proper testing.
+// VU1 cycles per EE cycle, as a shift. VU0/VU1 run at the EE core clock, so 0 (1:1) is
+// accurate and is the default. 1 (each VU1 cycle costs 2 EE cycles) is an opt-in calibration
+// fudge for TOOL mode (PCSX2_VU1_CLOCK_SHIFT=1, read in Pif::Reset): it stands in for VIF1,
+// GIF and GS costs PCSX2 doesn't model, and is not a hardware clock ratio.
 extern u32 g_vu1ClockShift;
 
 

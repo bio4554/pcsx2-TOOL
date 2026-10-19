@@ -291,10 +291,10 @@ namespace Pif
 
 		ToolSif2::Reset();
 
-		// VU1 at half the EE clock in TOOL mode (VUmicro.h). PCSX2_VU1_CLOCK_SHIFT=0 gives
-		// PCSX2's 1:1 back, for comparisons.
+		// VU1 calibration fudge, off by default (VUmicro.h). PCSX2_VU1_CLOCK_SHIFT=1 makes
+		// each VU1 cycle cost 2 EE cycles; real VU1 runs at the EE clock, so 0 is accurate.
 		const char* shift = std::getenv("PCSX2_VU1_CLOCK_SHIFT");
-		g_vu1ClockShift = IsPresent() ? (shift ? (std::atoi(shift) ? 1 : 0) : 1) : 0;
+		g_vu1ClockShift = (IsPresent() && shift && std::atoi(shift)) ? 1 : 0;
 
 		if (IsPresent())
 		{
