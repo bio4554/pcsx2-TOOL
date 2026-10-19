@@ -166,6 +166,49 @@ __ri void cpuException(u32 code, u32 bd)
 	cpuUpdateOperationMode();
 }
 
+// Debug exception (EE Core User's Manual 4.1.3 and 4.2.4): level 2, so it uses ErrorEPC/BD2/EXC2
+// and leaves EPC/EXL alone. cpuRegs.pc must hold the address of the instruction being cancelled.
+void cpuDebugException(bool bd)
+{
+	cpuRegs.CP0.n.Cause = (cpuRegs.CP0.n.Cause & ~((7u << 16) | (1u << 30))) | (3u << 16) | (bd ? (1u << 30) : 0);
+	cpuRegs.CP0.n.ErrorEPC = bd ? cpuRegs.pc - 4 : cpuRegs.pc;
+	cpuRegs.CP0.n.Status.b.ERL = 1;
+	cpuRegs.pc = cpuRegs.CP0.n.Status.b.DEV ? 0xBFC00300 : 0x80000100;
+	cpuRegs.branch = 0; // tells the interpreter's branch code that an exception was taken
+	cpuUpdateOperationMode();
+}
+
+// The BPC mode-enable bit that applies in the current processor mode (manual figure 9-2), or 0 at
+// level 2, where no breakpoint is established. `x`, `k`, `s`, `u` are the EXL/kernel/supervisor/user bits.
+static __fi u32 cpuBreakpointModeBit(u32 x, u32 k, u32 s, u32 u)
+{
+	const auto& st = cpuRegs.CP0.n.Status.b;
+	if (st.ERL)
+		return 0;
+	if (st.EXL)
+		return x;
+	return st.KSU == 0 ? k : st.KSU == 1 ? s : u;
+}
+
+// Instruction address breakpoint for the instruction at cpuRegs.pc (manual 9.2.5, figure 9-3).
+// Returns true when a debug exception was taken instead of executing it. Needs proper testing
+// against the TOOL (re-hit after ERET, interaction with other exceptions).
+bool cpuCheckInstBreakpoint()
+{
+	const u32 bpc = cpuRegs.DBG.n.bpc;
+	if (!(bpc & BPC_IAE) || !(bpc & cpuBreakpointModeBit(BPC_IXE, BPC_IKE, BPC_ISE, BPC_IUE)))
+		return false;
+	const u32 mask = cpuRegs.DBG.n.iabm;
+	if ((cpuRegs.pc & mask) != (cpuRegs.DBG.n.iab & mask))
+		return false;
+
+	cpuRegs.DBG.n.bpc |= BPC_IAB;
+	if (bpc & BPC_BED)
+		return false;
+	cpuDebugException(cpuRegs.branch != 0);
+	return true;
+}
+
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
 {
 	// Avoid too much spamming on the interpreter

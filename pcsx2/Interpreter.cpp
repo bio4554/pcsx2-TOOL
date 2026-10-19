@@ -171,6 +171,10 @@ static void execI()
 	CBreakPoints::CommitClearSkipFirst(BREAKPOINT_EE);
 #endif
 
+	// EE hardware instruction breakpoint (COP0 BPC/IAB/IABM).
+	if ((cpuRegs.DBG.n.bpc & BPC_IAE) && cpuCheckInstBreakpoint())
+		return;
+
 	const u32 pc = cpuRegs.pc;
 	// We need to increase the pc before executing the memRead32. An exception could appears
 	// and it expects the PC counter to be pre-incremented
