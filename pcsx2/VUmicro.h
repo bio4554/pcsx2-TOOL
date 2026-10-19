@@ -167,6 +167,10 @@ extern recMicroVU1 CpuMicroVU1;
 extern BaseVUmicroCPU* CpuVU0;
 extern BaseVUmicroCPU* CpuVU1;
 
+// TOOL: VU1 runs at the bus clock, half the EE's, so one VU1 cycle is 2 EE cycles (shift 1).
+// PCSX2 counts them 1:1 (shift 0). Set at VM reset (Pif::Reset); needs proper testing.
+extern u32 g_vu1ClockShift;
+
 
 // VU0
 extern void vu0ResetRegs();

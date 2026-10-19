@@ -350,7 +350,8 @@ _mVUt void mVUcleanUp()
 	}
 
 	mVU.cycles = mVU.totalCycles - std::max(0, mVU.cycles);
-	mVU.regs().cycle += mVU.cycles;
+	// VU1.cycle counts EE cycles (see g_vu1ClockShift).
+	mVU.regs().cycle += vuIndex ? (static_cast<u64>(mVU.cycles) << g_vu1ClockShift) : mVU.cycles;
 
 	if (!vuIndex || !THREAD_VU1)
 	{

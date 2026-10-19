@@ -9,6 +9,7 @@
 
 BaseVUmicroCPU* CpuVU0 = nullptr;
 BaseVUmicroCPU* CpuVU1 = nullptr;
+u32 g_vu1ClockShift = 0;
 
 __inline u32 CalculateMinRunCycles(u32 cycles, bool requiresAccurateCycles)
 {
@@ -54,8 +55,10 @@ void BaseVUmicroCPU::ExecuteBlock(bool startUp)
 		u64 cycle = m_Idx ? VU1.cycle : VU0.cycle;
 		s32 delta = (s32)(u32)(cpuRegs.cycle - cycle);
 
+		// Test before converting EE cycles to VU1 cycles: a 1-cycle gap shifts to 0, and
+		// vif1VUFinish's loop would then spin forever. The minimum run makes progress.
 		if (delta > 0)
-			Execute(CalculateMinRunCycles(delta, false));
+			Execute(CalculateMinRunCycles(m_Idx ? (delta >> g_vu1ClockShift) : delta, false));
 	}
 }
 

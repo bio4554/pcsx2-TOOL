@@ -7,6 +7,7 @@
 #include "R3000A.h"
 #include "ps2/BiosTools.h"
 #include "ps2/Iop/Pif.h"
+#include "VUmicro.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -289,6 +290,11 @@ namespace Pif
 		s_rxPendingOffset = 0;
 
 		ToolSif2::Reset();
+
+		// VU1 at half the EE clock in TOOL mode (VUmicro.h). PCSX2_VU1_CLOCK_SHIFT=0 gives
+		// PCSX2's 1:1 back, for comparisons.
+		const char* shift = std::getenv("PCSX2_VU1_CLOCK_SHIFT");
+		g_vu1ClockShift = IsPresent() ? (shift ? (std::atoi(shift) ? 1 : 0) : 1) : 0;
 
 		if (IsPresent())
 		{
