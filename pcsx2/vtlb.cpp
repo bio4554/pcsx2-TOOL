@@ -82,6 +82,7 @@ static constexpr u32 NO_FASTMEM_MAPPING = 0xFFFFFFFFu;
 static std::unique_ptr<SharedMemoryMappingArea> s_fastmem_area;
 static std::vector<u32> s_fastmem_virtual_mapping; // maps vaddr -> mainmem offset
 static std::unordered_multimap<u32, u32> s_fastmem_physical_mapping; // maps mainmem offset -> vaddr
+static std::map<u32, FastmemVirtualMapping> s_fastmem_views; // vaddr -> host view (4 KB host pages only)
 static std::unordered_map<uptr, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
 static std::unordered_set<u32> s_fastmem_faulting_pcs;
 
@@ -1011,6 +1012,19 @@ static void vtlb_RemoveFastmemMappings()
 		return;
 	}
 
+	if constexpr (!vtlb_MismatchedHostPageSize())
+	{
+		for (const auto& [vaddr, view] : s_fastmem_views)
+		{
+			if (!s_fastmem_area->Unmap(s_fastmem_area->OffsetPointer(vaddr), view.size))
+				Console.Error("Failed to unmap vaddr %08X size %08X", vaddr, view.size);
+		}
+		s_fastmem_views.clear();
+		std::fill(s_fastmem_virtual_mapping.begin(), s_fastmem_virtual_mapping.end(), NO_FASTMEM_MAPPING);
+		s_fastmem_physical_mapping.clear();
+		return;
+	}
+
 	for (u32 page = 0; page < FASTMEM_PAGE_COUNT; page++)
 	{
 		if (s_fastmem_virtual_mapping[page] == NO_FASTMEM_MAPPING)
@@ -1026,6 +1040,195 @@ static void vtlb_RemoveFastmemMappings()
 	}
 
 	s_fastmem_physical_mapping.clear();
+}
+
+// EE RAM pages with recompiled code are read-only in fastmem, like in eeMem.
+static bool vtlb_IsFastmemPageWriteable(u32 mainmem_offset)
+{
+	const u32 eemem_offset = mainmem_offset - HostMemoryMap::EEmemOffset;
+	return (eemem_offset >= Ps2MemSize::ExposedRam || mmap_GetRamPageInfo(eemem_offset) != ProtMode_Write);
+}
+
+// TOOL: with 4 KB host pages, fastmem maps each run of guest pages that is contiguous in the memory
+// file with one host view, instead of one view per page. The TOOL kernel's TLB maps its 128 MB with
+// 16 MB pages, and a Windows view per 4 KB page made that take up to 30 s. Windows can't unmap part
+// of a view, so unmapping inside one maps the parts on either side again. Hosts with bigger pages
+// keep the per-page functions above.
+
+// Points the page table and the reverse map for [vaddr, vaddr + size) at offset onwards, or at
+// nothing (NO_FASTMEM_MAPPING).
+static void vtlb_SetFastmemPages(u32 vaddr, u32 offset, u32 size)
+{
+	const u32 end = (vaddr / VTLB_PAGE_SIZE) + (size / VTLB_PAGE_SIZE);
+	for (u32 page = vaddr / VTLB_PAGE_SIZE; page < end; page++)
+	{
+		const u32 page_vaddr = page * VTLB_PAGE_SIZE;
+		const u32 old_offset = s_fastmem_virtual_mapping[page];
+		if (old_offset != offset)
+		{
+			if (old_offset != NO_FASTMEM_MAPPING)
+			{
+				auto range = s_fastmem_physical_mapping.equal_range(old_offset);
+				for (auto it = range.first; it != range.second; ++it)
+				{
+					if (it->second == page_vaddr)
+					{
+						s_fastmem_physical_mapping.erase(it);
+						break;
+					}
+				}
+			}
+
+			s_fastmem_virtual_mapping[page] = offset;
+			if (offset != NO_FASTMEM_MAPPING)
+				s_fastmem_physical_mapping.emplace(offset, page_vaddr);
+		}
+
+		if (offset != NO_FASTMEM_MAPPING)
+			offset += VTLB_PAGE_SIZE;
+	}
+}
+
+// Maps one view read/write, then makes its code pages read-only.
+static bool vtlb_MapFastmemView(u32 vaddr, u32 offset, u32 size)
+{
+	FASTMEM_LOG("Map fastmem view @ vaddr %08X size %08X mainmem %08X", vaddr, size, offset);
+
+	u8* const base = s_fastmem_area->OffsetPointer(vaddr);
+	if (!s_fastmem_area->Map(SysMemory::GetDataFileHandle(), offset, base, size, PageAccess_ReadWrite()))
+	{
+		Console.Error("Failed to map vaddr %08X size %08X to mainmem offset %08X", vaddr, size, offset);
+		return false;
+	}
+	s_fastmem_views.emplace(vaddr, FastmemVirtualMapping{offset, size});
+
+	for (u32 i = 0; i < size;)
+	{
+		if (vtlb_IsFastmemPageWriteable(offset + i))
+		{
+			i += VTLB_PAGE_SIZE;
+			continue;
+		}
+
+		u32 end = i + VTLB_PAGE_SIZE;
+		while (end < size && !vtlb_IsFastmemPageWriteable(offset + end))
+			end += VTLB_PAGE_SIZE;
+		HostSys::MemProtect(base + i, end - i, PageAccess_ReadOnly());
+		i = end;
+	}
+
+	return true;
+}
+
+// Unmaps [vaddr, vaddr + size): views inside it go, views across its edges are cut back to the
+// parts outside it.
+static void vtlb_UnmapFastmemRange(u32 vaddr, u32 size)
+{
+	const u64 end = static_cast<u64>(vaddr) + size;
+	auto it = s_fastmem_views.upper_bound(vaddr);
+	if (it != s_fastmem_views.begin())
+	{
+		auto prev = std::prev(it);
+		if (prev->first + static_cast<u64>(prev->second.size) > vaddr)
+			it = prev;
+	}
+
+	while (it != s_fastmem_views.end() && it->first < end)
+	{
+		const u32 view_vaddr = it->first;
+		const FastmemVirtualMapping view = it->second;
+		const u64 view_end = view_vaddr + static_cast<u64>(view.size);
+		it = s_fastmem_views.erase(it);
+
+		FASTMEM_LOG("Unmap fastmem view @ vaddr %08X size %08X mainmem %08X", view_vaddr, view.size, view.offset);
+		if (!s_fastmem_area->Unmap(s_fastmem_area->OffsetPointer(view_vaddr), view.size))
+			Console.Error("Failed to unmap vaddr %08X size %08X", view_vaddr, view.size);
+
+		// Keep the parts outside the range. The TOOL kernel does this at every boot: its TLB setup
+		// removes the 128 MB kuseg direct map one 16 MB entry at a time. Only the right-hand cut is
+		// seen there, so the left one needs proper testing. The new views go before the range or
+		// start at its end, so the loop doesn't visit them.
+		if (view_vaddr < vaddr && !vtlb_MapFastmemView(view_vaddr, view.offset, vaddr - view_vaddr))
+			vtlb_SetFastmemPages(view_vaddr, NO_FASTMEM_MAPPING, vaddr - view_vaddr);
+		if (view_end > end)
+		{
+			const u32 right_vaddr = static_cast<u32>(end);
+			const u32 right_size = static_cast<u32>(view_end - end);
+			if (!vtlb_MapFastmemView(right_vaddr, view.offset + (right_vaddr - view_vaddr), right_size))
+				vtlb_SetFastmemPages(right_vaddr, NO_FASTMEM_MAPPING, right_size);
+		}
+	}
+
+	vtlb_SetFastmemPages(vaddr, NO_FASTMEM_MAPPING, size);
+}
+
+static void vtlb_MapFastmemRange(u32 vaddr, u32 offset, u32 size)
+{
+	// Already mapped like this? (memMapKernelMem maps kseg0/kseg1 again on every reset.)
+	const u32 first_page = vaddr / VTLB_PAGE_SIZE;
+	const u32 num_pages = size / VTLB_PAGE_SIZE;
+	u32 i = 0;
+	while (i < num_pages && s_fastmem_virtual_mapping[first_page + i] == offset + i * VTLB_PAGE_SIZE)
+		i++;
+	if (i == num_pages)
+		return;
+
+	vtlb_UnmapFastmemRange(vaddr, size);
+	if (vtlb_MapFastmemView(vaddr, offset, size))
+		vtlb_SetFastmemPages(vaddr, offset, size);
+}
+
+static void vtlb_FastmemMap(u32 vaddr, u32 offset, u32 size)
+{
+	if constexpr (vtlb_MismatchedHostPageSize())
+	{
+		for (u32 i = 0; i < size; i += VTLB_PAGE_SIZE)
+		{
+			const bool writeable = vtlb_IsFastmemPageWriteable(offset + i);
+			vtlb_CreateFastmemMapping(vaddr + i, offset + i, PageProtectionMode().Read().Write(writeable));
+		}
+	}
+	else
+	{
+		vtlb_MapFastmemRange(vaddr, offset, size);
+	}
+}
+
+static void vtlb_FastmemUnmap(u32 vaddr, u32 size)
+{
+	if constexpr (vtlb_MismatchedHostPageSize())
+		vtlb_RemoveFastmemMappings(vaddr, size);
+	else
+		vtlb_UnmapFastmemRange(vaddr, size);
+}
+
+// Points num_pages guest pages from vaddr at page_offset(i) each (NO_FASTMEM_MAPPING: no fastmem),
+// one range per run of pages that is contiguous in the memory file. With unmap_holes false, pages
+// without an offset are left as they are.
+template <typename F>
+static void vtlb_FastmemMapPages(u32 vaddr, u32 num_pages, bool unmap_holes, const F& page_offset)
+{
+	for (u32 i = 0; i < num_pages;)
+	{
+		const u32 offset = page_offset(i);
+		u32 n = 1;
+		if (offset == NO_FASTMEM_MAPPING)
+		{
+			while (i + n < num_pages && page_offset(i + n) == NO_FASTMEM_MAPPING)
+				n++;
+		}
+		else
+		{
+			while (i + n < num_pages && page_offset(i + n) == offset + n * VTLB_PAGE_SIZE)
+				n++;
+		}
+
+		if (offset != NO_FASTMEM_MAPPING)
+			vtlb_FastmemMap(vaddr + i * VTLB_PAGE_SIZE, offset, n * VTLB_PAGE_SIZE);
+		else if (unmap_holes)
+			vtlb_FastmemUnmap(vaddr + i * VTLB_PAGE_SIZE, n * VTLB_PAGE_SIZE);
+		i += n;
+	}
 }
 
 bool vtlb_ResolveFastmemMapping(uptr* addr)
@@ -1080,6 +1283,24 @@ void vtlb_UpdateFastmemProtection(u32 paddr, u32 size, PageProtectionMode prot)
 
 	u32 current_mainmem = mainmem_start;
 	const u32 num_pages = std::min(size, mainmem_size) / VTLB_PAGE_SIZE;
+
+	if constexpr (!vtlb_MismatchedHostPageSize())
+	{
+		// Big ranges (block tracking resets cover all of RAM): one call per view instead of one
+		// per aliased page, which is several per page with the TOOL's 128 MB.
+		if (num_pages > s_fastmem_views.size())
+		{
+			const u32 mainmem_end = mainmem_start + num_pages * VTLB_PAGE_SIZE;
+			for (const auto& [vaddr, view] : s_fastmem_views)
+			{
+				const u32 start = std::max(view.offset, mainmem_start);
+				const u32 end = std::min(view.offset + view.size, mainmem_end);
+				if (start < end)
+					HostSys::MemProtect(s_fastmem_area->OffsetPointer(vaddr + (start - view.offset)), end - start, prot);
+			}
+			return;
+		}
+	}
 	for (u32 i = 0; i < num_pages; i++, current_mainmem += VTLB_PAGE_SIZE)
 	{
 		// update virtual mapping mapping
@@ -1153,19 +1374,11 @@ void vtlb_VMap(u32 vaddr, u32 paddr, u32 size)
 
 	if (CHECK_FASTMEM)
 	{
-		const u32 num_pages = size / VTLB_PAGE_SIZE;
-		u32 current_vaddr = vaddr;
-		u32 current_paddr = paddr;
-
-		for (u32 i = 0; i < num_pages; i++, current_vaddr += VTLB_PAGE_SIZE, current_paddr += VTLB_PAGE_SIZE)
-		{
+		vtlb_FastmemMapPages(vaddr, size / VTLB_PAGE_SIZE, true, [paddr](u32 i) {
 			u32 hoffset, hsize;
 			PageProtectionMode mode;
-			if (vtlb_GetMainMemoryOffset(current_paddr, &hoffset, &hsize, &mode))
-				vtlb_CreateFastmemMapping(current_vaddr, hoffset, mode);
-			else
-				vtlb_RemoveFastmemMapping(current_vaddr);
-		}
+			return vtlb_GetMainMemoryOffset(paddr + i * VTLB_PAGE_SIZE, &hoffset, &hsize, &mode) ? hoffset : NO_FASTMEM_MAPPING;
+		});
 	}
 
 	while (size > 0)
@@ -1197,17 +1410,9 @@ void vtlb_VMapBuffer(u32 vaddr, void* buffer, u32 size)
 	if (CHECK_FASTMEM)
 	{
 		if (buffer == eeMem->Scratch && size == Ps2MemSize::Scratch)
-		{
-			u32 fm_vaddr = vaddr;
-			u32 fm_hostoffset = HostMemoryMap::EEmemOffset + offsetof(EEVM_MemoryAllocMess, Scratch);
-			PageProtectionMode mode = PageProtectionMode().Read().Write();
-			for (u32 i = 0; i < (Ps2MemSize::Scratch / VTLB_PAGE_SIZE); i++, fm_vaddr += VTLB_PAGE_SIZE, fm_hostoffset += VTLB_PAGE_SIZE)
-				vtlb_CreateFastmemMapping(fm_vaddr, fm_hostoffset, mode);
-		}
+			vtlb_FastmemMap(vaddr, HostMemoryMap::EEmemOffset + offsetof(EEVM_MemoryAllocMess, Scratch), Ps2MemSize::Scratch);
 		else
-		{
-			vtlb_RemoveFastmemMappings(vaddr, size);
-		}
+			vtlb_FastmemUnmap(vaddr, size);
 	}
 
 	uptr bu8 = (uptr)buffer;
@@ -1225,7 +1430,7 @@ void vtlb_VMapUnmap(u32 vaddr, u32 size)
 	verify(0 == (vaddr & VTLB_PAGE_MASK));
 	verify(0 == (size & VTLB_PAGE_MASK) && size > 0);
 
-	vtlb_RemoveFastmemMappings(vaddr, size);
+	vtlb_FastmemUnmap(vaddr, size);
 
 	while (size > 0)
 	{
@@ -1300,22 +1505,20 @@ void vtlb_ResetFastmem()
 		return;
 
 	// we need to go through and look at the vtlb pointers, to remap the host area
-	for (size_t i = 0; i < VTLB_VMAP_ITEMS; i++)
-	{
+	vtlb_FastmemMapPages(0, VTLB_VMAP_ITEMS, false, [](u32 i) {
 		const VTLBVirtual& vm = vtlbdata.vmap[i];
-		const u32 vaddr = static_cast<u32>(i) << VTLB_PAGE_BITS;
+		const u32 vaddr = i << VTLB_PAGE_BITS;
 		if (vm.isHandler(vaddr))
 		{
 			// Handlers should be unmapped.
-			continue;
+			return NO_FASTMEM_MAPPING;
 		}
 
 		// Check if it's a physical mapping to our main memory area.
 		u32 mainmem_offset, mainmem_size;
 		PageProtectionMode prot;
-		if (vtlb_GetMainMemoryOffsetFromPtr(vm.assumePtr(vaddr), &mainmem_offset, &mainmem_size, &prot))
-			vtlb_CreateFastmemMapping(vaddr, mainmem_offset, prot);
-	}
+		return vtlb_GetMainMemoryOffsetFromPtr(vm.assumePtr(vaddr), &mainmem_offset, &mainmem_size, &prot) ? mainmem_offset : NO_FASTMEM_MAPPING;
+	});
 }
 
 // Reserves the vtlb core allocation used by various emulation components!

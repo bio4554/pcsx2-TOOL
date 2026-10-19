@@ -243,9 +243,51 @@ __fi void COP0_UpdatePCCR()
 //
 
 
+// Maps each run of matching pages with one vtlb_VMap, so fastmem gets one host view for it, not one
+// per 4 KB page (TOOL: the kernel maps its 128 MB with 16 MB pages). pfn is the PFN of saddr.
+static void MapTLBPages(u32 saddr, u32 eaddr, u32 mask, u32 match, u32 pfn)
+{
+	for (u32 addr = saddr; addr < eaddr;)
+	{
+		if ((addr & mask) != match)
+		{
+			addr++;
+			continue;
+		}
+
+		u32 end = addr + 1;
+		while (end < eaddr && (end & mask) == match)
+			end++;
+
+		vtlb_VMap(addr << 12, pfn + ((addr - saddr) << 12), (end - addr) << 12);
+		for (; addr < end; addr++)
+			Cpu->Clear(addr << 12, 0x400);
+	}
+}
+
+static void UnmapTLBPages(u32 saddr, u32 eaddr, u32 mask, u32 match)
+{
+	for (u32 addr = saddr; addr < eaddr;)
+	{
+		if ((addr & mask) != match)
+		{
+			addr++;
+			continue;
+		}
+
+		u32 end = addr + 1;
+		while (end < eaddr && (end & mask) == match)
+			end++;
+
+		vtlb_VMapUnmap(addr << 12, (end - addr) << 12);
+		for (; addr < end; addr++)
+			Cpu->Clear(addr << 12, 0x400);
+	}
+}
+
 void MapTLB(const tlbs& t, int i)
 {
-	u32 mask, addr;
+	u32 mask;
 	u32 saddr, eaddr;
 
 	COP0_LOG("MAP TLB %d: 0x%08X-> [0x%08X 0x%08X] S=%d G=%d ASID=%d Mask=0x%03X EntryLo0 PFN=%x EntryLo0 Cache=%x EntryLo1 PFN=%x EntryLo1 Cache=%x VPN2=%x",
@@ -270,15 +312,7 @@ void MapTLB(const tlbs& t, int i)
 			mask = ((~t.Mask()) << 1) & 0xfffff;
 			saddr = t.VPN2() >> 12;
 			eaddr = saddr + t.Mask() + 1;
-
-			for (addr = saddr; addr < eaddr; addr++)
-			{
-				if ((addr & mask) == ((t.VPN2() >> 12) & mask))
-				{ //match
-					memSetPageAddr(addr << 12, t.PFN0() + ((addr - saddr) << 12));
-					Cpu->Clear(addr << 12, 0x400);
-				}
-			}
+			MapTLBPages(saddr, eaddr, mask, (t.VPN2() >> 12) & mask, t.PFN0());
 		}
 
 		if (t.EntryLo1.V)
@@ -286,15 +320,7 @@ void MapTLB(const tlbs& t, int i)
 			mask = ((~t.Mask()) << 1) & 0xfffff;
 			saddr = (t.VPN2() >> 12) + t.Mask() + 1;
 			eaddr = saddr + t.Mask() + 1;
-
-			for (addr = saddr; addr < eaddr; addr++)
-			{
-				if ((addr & mask) == ((t.VPN2() >> 12) & mask))
-				{ //match
-					memSetPageAddr(addr << 12, t.PFN1() + ((addr - saddr) << 12));
-					Cpu->Clear(addr << 12, 0x400);
-				}
-			}
+			MapTLBPages(saddr, eaddr, mask, (t.VPN2() >> 12) & mask, t.PFN1());
 		}
 	}
 }
@@ -311,7 +337,7 @@ __inline u32 ConvertPageMask(const u32 PageMask)
 void UnmapTLB(const tlbs& t, int i)
 {
 	//Console.WriteLn("Clear TLB %d: %08x-> [%08x %08x] S=%d G=%d ASID=%d Mask= %03X", i,t.VPN2,t.PFN0,t.PFN1,t.S,t.G,t.ASID,t.Mask);
-	u32 mask, addr;
+	u32 mask;
 	u32 saddr, eaddr;
 
 	if (t.isSPR())
@@ -326,14 +352,7 @@ void UnmapTLB(const tlbs& t, int i)
 		saddr = t.VPN2() >> 12;
 		eaddr = saddr + t.Mask() + 1;
 		//	Console.WriteLn("Clear TLB: %08x ~ %08x",saddr,eaddr-1);
-		for (addr = saddr; addr < eaddr; addr++)
-		{
-			if ((addr & mask) == ((t.VPN2() >> 12) & mask))
-			{ //match
-				memClearPageAddr(addr << 12);
-				Cpu->Clear(addr << 12, 0x400);
-			}
-		}
+		UnmapTLBPages(saddr, eaddr, mask, (t.VPN2() >> 12) & mask);
 	}
 
 	if (t.EntryLo1.V)
@@ -342,14 +361,7 @@ void UnmapTLB(const tlbs& t, int i)
 		saddr = (t.VPN2() >> 12) + t.Mask() + 1;
 		eaddr = saddr + t.Mask() + 1;
 		//	Console.WriteLn("Clear TLB: %08x ~ %08x",saddr,eaddr-1);
-		for (addr = saddr; addr < eaddr; addr++)
-		{
-			if ((addr & mask) == ((t.VPN2() >> 12) & mask))
-			{ //match
-				memClearPageAddr(addr << 12);
-				Cpu->Clear(addr << 12, 0x400);
-			}
-		}
+		UnmapTLBPages(saddr, eaddr, mask, (t.VPN2() >> 12) & mask);
 	}
 
 	for (size_t i = 0; i < cachedTlbs.count; i++)
