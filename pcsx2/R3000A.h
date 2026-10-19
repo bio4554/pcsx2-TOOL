@@ -192,6 +192,24 @@ extern R3000Acpu psxRec;
 
 extern void psxReset();
 extern void psxException(u32 code, u32 step);
+
+// IOP hardware breakpoints: COP0 BPC(3) BDA(5) TAR(6) DCIC(7) BDAM(9) BPCM(11), LR33300-style DCIC
+// (bit names as dsidb prints them).
+enum : u32 {
+	DCIC_DB = 1u << 0, DCIC_PC = 1u << 1, DCIC_DA = 1u << 2, DCIC_R = 1u << 3, DCIC_W = 1u << 4, DCIC_T = 1u << 5,
+	DCIC_DE = 1u << 23, DCIC_PCE = 1u << 24, DCIC_DAE = 1u << 25, DCIC_DR = 1u << 26, DCIC_DW = 1u << 27,
+	DCIC_TE = 1u << 28, DCIC_KD = 1u << 29, DCIC_UD = 1u << 30, DCIC_TR = 1u << 31,
+};
+extern void psxDebugException(bool bd);
+extern bool psxCheckInstBreakpoint(bool bd);
+extern bool psxCheckDataBreakpoint(u32 code, bool bd);
+extern void psxRecCheckBreakpointConfig();
+
+// R3000 load delay hazards (see R3000AInterpreter.cpp).
+extern bool psxLoadDelayHazard(u32 load, u32 next);
+extern u32 psxLoadDelayRunLength(u32 pc, u32 endpc);
+extern void psxExecLoadDelayRun(u32 pc, u32 n);
+extern u32 psxLoadDelayDest(u32 code);
 extern void iopEventTest();
 
 int psxIsBreakpointNeeded(u32 addr);

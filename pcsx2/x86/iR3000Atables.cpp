@@ -1991,6 +1991,13 @@ static void rpsxMTC0()
 		const int rt = _allocX86reg(X86TYPE_PSX, _Rt_, MODE_READ);
 		xMOV(ptr32[&psxRegs.CP0.r[_Rd_]], xRegister32(rt));
 	}
+
+	// BPC/DCIC/BPCM: hardware breakpoints may need code compiled with checks.
+	if (_Rd_ == 3 || _Rd_ == 7 || _Rd_ == 11)
+	{
+		_psxFlushCall(FLUSH_NODESTROY);
+		xFastCall((void*)psxRecCheckBreakpointConfig);
+	}
 }
 
 static void rpsxCTC0()

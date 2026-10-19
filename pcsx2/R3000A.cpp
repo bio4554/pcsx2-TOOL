@@ -95,6 +95,63 @@ void psxException(u32 code, u32 bd)
 	}*/
 }
 
+// IOP hardware breakpoints (DCIC, LR33300-style). The debug exception goes to 0x80000040 (0xBFC00140
+// with BEV), where the ROM's excepman stub saves EPC/Cause/SR/DCIC to 0x420 and dispatches through
+// exception slot 15 to DECI2. Cause.ExcCode = 9 (Bp) and data breakpoints stopping before the access
+// are assumptions, as is the BPCM/BDAM sense (1 = compare); trace (TE/TAR) isn't modelled.
+// Needs proper testing against the TOOL.
+void psxDebugException(bool bd)
+{
+	psxRegs.CP0.n.Cause = (psxRegs.CP0.n.Cause & ~(0x7cu | 0x80000000u)) | (9u << 2) | (bd ? 0x80000000u : 0);
+	psxRegs.CP0.n.EPC = bd ? psxRegs.pc - 4 : psxRegs.pc;
+	psxRegs.pc = (psxRegs.CP0.n.Status & 0x400000) ? 0xbfc00140 : 0x80000040;
+	psxRegs.CP0.n.Status = (psxRegs.CP0.n.Status & ~0x3f) | ((psxRegs.CP0.n.Status & 0xf) << 2);
+}
+
+static __fi bool psxBreakpointModeEnabled(u32 dcic)
+{
+	const bool user = (psxRegs.CP0.n.Status & 2) != 0; // KUc
+	return (dcic & (user ? DCIC_UD : DCIC_KD)) != 0;
+}
+
+static bool psxBreakpointHit(u32 flags, bool bd)
+{
+	psxRegs.CP0.r[7] |= DCIC_DB | flags;
+	if (!(psxRegs.CP0.r[7] & DCIC_TR))
+		return false;
+	psxDebugException(bd);
+	return true;
+}
+
+// For the instruction at psxRegs.pc. True when the debug exception was taken instead.
+bool psxCheckInstBreakpoint(bool bd)
+{
+	const u32 dcic = psxRegs.CP0.r[7];
+	if ((dcic & (DCIC_DE | DCIC_PCE)) != (DCIC_DE | DCIC_PCE) || !psxBreakpointModeEnabled(dcic))
+		return false;
+	if ((psxRegs.pc ^ psxRegs.CP0.r[3]) & psxRegs.CP0.r[11])
+		return false;
+	return psxBreakpointHit(DCIC_PC, bd);
+}
+
+// Before the instruction `code` at psxRegs.pc runs: a load/store matching BDA/BDAM.
+bool psxCheckDataBreakpoint(u32 code, bool bd)
+{
+	const u32 op = code >> 26;
+	const bool load = (op >= 0x20 && op <= 0x26) || op == 0x32;
+	const bool store = (op >= 0x28 && op <= 0x2e) || op == 0x3a;
+	if (!load && !store)
+		return false;
+	const u32 dcic = psxRegs.CP0.r[7];
+	if ((dcic & (DCIC_DE | DCIC_DAE)) != (DCIC_DE | DCIC_DAE) || !(dcic & (store ? DCIC_DW : DCIC_DR)) ||
+		!psxBreakpointModeEnabled(dcic))
+		return false;
+	const u32 ea = psxRegs.GPR.r[(code >> 21) & 31] + static_cast<s32>(static_cast<s16>(code));
+	if ((ea ^ psxRegs.CP0.r[5]) & psxRegs.CP0.r[9])
+		return false;
+	return psxBreakpointHit(DCIC_DA | (store ? DCIC_W : DCIC_R), bd);
+}
+
 __fi void psxSetNextBranch( u64 startCycle, s32 delta )
 {
 	// typecast the conditional to signed so that things don't blow up

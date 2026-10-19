@@ -82,6 +82,63 @@ static u32 s_savenBlockCycles = 0;
 static bool s_recompilingDelaySlot = false;
 
 static void iPsxBranchTest(u32 newpc, u32 cpuBranch);
+
+// IOP hardware breakpoints (COP0 DCIC/BPC/BPCM/BDA/BDAM). Instructions matching the BPC/BPCM the
+// code was compiled for, and every load/store while data breakpoints were enabled at compile time,
+// get a call to psxRecBreakpoint in front of them. A DCIC/BPC/BPCM write that enables something the
+// compiled code doesn't cover requests a reset, done at the next recExecuteBlock (a reset from
+// inside a block would overwrite the code being run). Needs proper testing.
+static bool s_psxRecPceCompiled = false;
+static u32 s_psxRecBpcCompiled = 0, s_psxRecBpcmCompiled = 0;
+static bool s_psxRecDataBpCompiled = false;
+static bool s_psxRecNeedsReset = false;
+
+static void psxRecSnapshotBreakpointConfig()
+{
+	const u32 dcic = psxRegs.CP0.r[7];
+	s_psxRecPceCompiled = (dcic & (DCIC_DE | DCIC_PCE)) == (DCIC_DE | DCIC_PCE);
+	s_psxRecBpcCompiled = psxRegs.CP0.r[3];
+	s_psxRecBpcmCompiled = psxRegs.CP0.r[11];
+	s_psxRecDataBpCompiled = (dcic & (DCIC_DE | DCIC_DAE)) == (DCIC_DE | DCIC_DAE);
+}
+
+void psxRecCheckBreakpointConfig()
+{
+	const u32 dcic = psxRegs.CP0.r[7];
+	const bool pce = (dcic & (DCIC_DE | DCIC_PCE)) == (DCIC_DE | DCIC_PCE);
+	const bool data = (dcic & (DCIC_DE | DCIC_DAE)) == (DCIC_DE | DCIC_DAE);
+	const bool instMissing = pce &&
+		!(s_psxRecPceCompiled && psxRegs.CP0.r[3] == s_psxRecBpcCompiled && psxRegs.CP0.r[11] == s_psxRecBpcmCompiled);
+	if (instMissing || (data && !s_psxRecDataBpCompiled))
+	{
+		s_psxRecNeedsReset = true;
+		psxRegs.iopCycleEE = 0; // end this timeslice at the next block boundary
+	}
+}
+
+static bool psxRecInstBreakpointNeeded(u32 addr)
+{
+	return s_psxRecPceCompiled && ((addr ^ s_psxRecBpcCompiled) & s_psxRecBpcmCompiled) == 0;
+}
+
+static bool psxRecIsLoadStore(u32 code)
+{
+	const u32 op = code >> 26;
+	return (op >= 0x20 && op <= 0x26) || (op >= 0x28 && op <= 0x2e) || op == 0x32 || op == 0x3a;
+}
+
+// Called from recompiled code with everything flushed; `addrbd` is the instruction address with bit 0
+// set in a delay slot. True when the debug exception was taken (psxRegs.pc is then the vector).
+static bool psxRecBreakpoint(u32 addrbd, u32 code)
+{
+	const u32 oldpc = psxRegs.pc;
+	const bool bd = (addrbd & 1) != 0;
+	psxRegs.pc = addrbd & ~3u;
+	if (psxCheckInstBreakpoint(bd) || psxCheckDataBreakpoint(code, bd))
+		return true;
+	psxRegs.pc = oldpc;
+	return false;
+}
 void psxRecompileNextInstruction(int delayslot);
 
 extern void (*rpsxBSC[64])();
@@ -1029,6 +1086,8 @@ void recResetIOP()
 	g_psxMaxRecMem = 0;
 
 	psxbranch = 0;
+
+	psxRecSnapshotBreakpointConfig();
 }
 
 static void recShutdown()
@@ -1050,6 +1109,12 @@ static void iopClearRecLUT(BASEBLOCK* base, int count)
 
 static __noinline s32 recExecuteBlock(s32 eeCycles)
 {
+	if (s_psxRecNeedsReset)
+	{
+		s_psxRecNeedsReset = false;
+		recResetIOP();
+	}
+
 	psxRegs.iopBreak = 0;
 	psxRegs.iopCycleEE = eeCycles;
 
@@ -1520,6 +1585,46 @@ void psxRecompileNextInstruction(bool delayslot, bool swapped_delayslot)
 	else
 	{
 		_clearNeededX86regs();
+	}
+
+	// IOP hardware breakpoints: psxpc is this instruction's address here, delay slot or not.
+	{
+		const u32 code = iopMemRead32(psxpc);
+		if (psxRecInstBreakpointNeeded(psxpc) || (s_psxRecDataBpCompiled && psxRecIsLoadStore(code)))
+		{
+			_psxFlushCall(FLUSH_EVERYTHING);
+			xFastCall((void*)psxRecBreakpoint, psxpc | (delayslot ? 1u : 0u), code);
+			xTEST(al, al);
+			xForwardJZ32 notTaken;
+			xADD(ptr64[&psxRegs.cycle], psxScaleBlockCycles());
+			iPsxAddEECycles(psxScaleBlockCycles());
+			xJMP(iopDispatcherReg);
+			notTaken.SetTarget();
+		}
+	}
+
+	// R3000 load delay hazard (a load whose next instruction reads the loaded register): run the
+	// instructions involved through the interpreter helper. Only within the block, outside delay slots.
+	if (!delayslot && !swapped_delayslot && psxpc + 8 <= s_nEndBlock &&
+		psxLoadDelayHazard(iopMemRead32(psxpc), iopMemRead32(psxpc + 4)))
+	{
+		const u32 n = psxLoadDelayRunLength(psxpc, s_nEndBlock);
+		_psxFlushCall(FLUSH_EVERYTHING);
+		xFastCall((void*)psxExecLoadDelayRun, psxpc, n);
+		xFastCall((void*)psxRecCheckBreakpointConfig); // in case the run wrote BPC/DCIC/BPCM (rare)
+		for (u32 i = 0; i < n; i++)
+		{
+			const u32 code = iopMemRead32(psxpc + 4 * i);
+			if (const u32 rt = (code >> 16) & 31) // a load's target (conservative for the rest)
+				PSX_DEL_CONST(rt);
+			if (const u32 dest = psxLoadDelayDest(code))
+				PSX_DEL_CONST(dest);
+		}
+		psxRegs.code = iopMemRead32(psxpc + 4 * (n - 1));
+		s_psxBlockCycles += n;
+		psxpc += 4 * n;
+		g_pCurInstInfo += n;
+		return;
 	}
 
 	psxRegs.code = iopMemRead32(psxpc);
