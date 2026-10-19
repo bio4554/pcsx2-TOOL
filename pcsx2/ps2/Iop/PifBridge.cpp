@@ -57,6 +57,7 @@ namespace Pif::Bridge
 	static constexpr u16 PROTO_NETMP = 0x0400;
 	static constexpr u8 NETMP_CODE_RESET = 0x02;
 	static constexpr u8 NETMP_CODE_RESETR = 0x03;
+	static constexpr u8 NETMP_CAUSE_RESET = 0x06;
 
 	static bool s_enabled;
 	static bool s_listenMode;
@@ -438,8 +439,10 @@ namespace Pif::Bridge
 		const bool rebooted = s_targetBooted.exchange(true, std::memory_order_acq_rel);
 		if (s_resetReplyOwed.exchange(false, std::memory_order_acq_rel))
 		{
-			// NETMP RESETR: header (len 10, NETMP, H->H), then code 3, result 0.
-			const u8 reply[10] = {10, 0, 0, 0, PROTO_NETMP & 0xff, PROTO_NETMP >> 8, 'H', 'H', NETMP_CODE_RESETR, 0};
+			// NETMP RESETR: header (len 11, NETMP, H->H), then code 3, result 0 and the cause
+			// byte, 6 = reset by NETMP_CODE_RESET (NETMP spec; the TOOL sends 0b 00 00 00 00 04
+			// 48 48 03 00 06). dsnetm passes this to its clients as it is.
+			const u8 reply[11] = {11, 0, 0, 0, PROTO_NETMP & 0xff, PROTO_NETMP >> 8, 'H', 'H', NETMP_CODE_RESETR, 0, NETMP_CAUSE_RESET};
 			Console.WriteLn("PIF: target booted, sending NETMP reset reply");
 			SendToHost(reply, sizeof(reply));
 			return;
@@ -450,6 +453,10 @@ namespace Pif::Bridge
 		// The target rebooted by itself: drop the link like mrp.o's EPIPE (see the top of
 		// this file). Packets still queued were meant for the old boot. Needs checking
 		// against a real TOOL, e.g. whether dsnetm gets anything before the EPIPE.
+		// dsnetm then sends its clients its own RESETR. On the TOOL the cause comes from mrp.o
+		// (0x00, software restart); over TCP dsnetm has no driver to ask and sends 0xff. A
+		// RESETR from here wouldn't help: dsnetm only resends its DCMP connects after a link
+		// drop or a client's reset, so the boot would wait in DECI2HSYN.
 		Console.WriteLn("PIF: target rebooted by itself, dropping the link so dsnetm reconnects");
 		{
 			std::lock_guard lock(s_inMutex);
