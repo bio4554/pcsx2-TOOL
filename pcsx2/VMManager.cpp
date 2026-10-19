@@ -40,6 +40,7 @@
 #include "SPU2/spu2.h"
 #include "SupportURLs.h"
 #include "USB/USB.h"
+#include "ps2/Iop/Pif.h"
 #include "Vif_Dynarec.h"
 #include "VMManager.h"
 #include "ps2/BiosTools.h"
@@ -1737,6 +1738,7 @@ void VMManager::Shutdown(bool save_resume_state)
 	R3000A::ioman::reset();
 	vtlb_Shutdown();
 	USBclose();
+	Pif::Bridge::Stop();
 	SPU2::Close();
 	Pad::Shutdown();
 	g_Sio2.Shutdown();

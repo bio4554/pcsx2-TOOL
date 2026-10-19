@@ -11,6 +11,7 @@
 #include "IopHw.h"
 #include "Mdec.h"
 #include "R3000A.h"
+#include "ps2/Iop/Pif.h"
 
 // NOTE: Any modifications to read/write fns should also go into their const counterparts
 // found in iPsxHw.cpp.
@@ -25,6 +26,7 @@ void psxHwReset() {
 	cdrReset();
 	cdvdReset();
 	psxRcntInit();
+	Pif::Reset();
 }
 
 __fi u8 psxHw4Read8(u32 add)

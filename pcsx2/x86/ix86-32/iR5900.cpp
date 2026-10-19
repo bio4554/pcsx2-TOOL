@@ -777,6 +777,22 @@ static void recExecute()
 }
 
 ////////////////////////////////////////////////////
+// SYSCALL or BREAK in a branch delay slot (a debugger's single step puts a BREAK there,
+// e.g. the TOOL kernel stepping over a JAL). Take the exception the way the interpreter
+// does: cpuRegs.pc past the delay slot and cpuRegs.branch set, so EPC is the branch and
+// Cause.BD is set. Then leave the block for the exception vector: the branch must not be
+// taken, or the exception is lost (the block went on to the branch target with EXL set).
+// Needs proper testing.
+static void recExceptionInDelaySlot(void (*func)())
+{
+	iFlushCall(FLUSH_EVERYTHING);
+	xMOV(ptr32[&cpuRegs.pc], pc + 4);
+	xMOV(ptr32[&cpuRegs.code], cpuRegs.code);
+	xMOV(ptr32[&cpuRegs.branch], 1);
+	xFastCall((void*)func);
+	iBranchTest();
+}
+
 void R5900::Dynarec::OpcodeImpl::recSYSCALL()
 {
 	EE::Profiler.EmitOp(eeOpcode::SYSCALL);
@@ -791,6 +807,11 @@ void R5900::Dynarec::OpcodeImpl::recSYSCALL()
 			return;
 		}
 	}
+	if (g_recompilingDelaySlot)
+	{
+		recExceptionInDelaySlot(R5900::Interpreter::OpcodeImpl::SYSCALL);
+		return;
+	}
 	recCall(R5900::Interpreter::OpcodeImpl::SYSCALL);
 	g_branch = 2; // Indirect branch with event check.
 }
@@ -800,6 +821,11 @@ void R5900::Dynarec::OpcodeImpl::recBREAK()
 {
 	EE::Profiler.EmitOp(eeOpcode::BREAK);
 
+	if (g_recompilingDelaySlot)
+	{
+		recExceptionInDelaySlot(R5900::Interpreter::OpcodeImpl::BREAK);
+		return;
+	}
 	recCall(R5900::Interpreter::OpcodeImpl::BREAK);
 	g_branch = 2; // Indirect branch with event check.
 }

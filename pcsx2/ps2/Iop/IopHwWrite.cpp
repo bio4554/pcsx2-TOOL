@@ -15,6 +15,7 @@
 #include "R3000A.h"
 
 #include "ps2/pgif.h"
+#include "ps2/Iop/Pif.h"
 #include "Mdec.h"
 
 #define SIO0LOG_ENABLE 0
@@ -153,6 +154,8 @@ void iopHwWrite8_Page3( u32 addr, mem8_t val )
 		}
 	}
 
+	if (Pif::Handles(addr))
+		Pif::Write8(addr, val);
 	psxHu8( addr ) = val;
 	IopHwTraceLog<mem8_t>( addr, val, false );
 }
@@ -272,6 +275,11 @@ static __fi void _HwWrite_16or32_Page1( u32 addr, T val )
 	// ------------------------------------------------------------------------
 	// PS1 GPU access
 	//
+	else if ( (masked_addr >= pgmsk(HW_PS1_GPU_START)) && (masked_addr < pgmsk(HW_PS1_GPU_END)) && ToolSif2::Active() )
+	{
+		// TOOL: this is SIF2's IOP DMA channel, not the PS1 GPU.
+		ToolSif2::IopWrite(addr, val, sizeof(T));
+	}
 	else if ( (masked_addr >= pgmsk(HW_PS1_GPU_START)) && (masked_addr < pgmsk(HW_PS1_GPU_END)) )
 	{
 		// todo: psx mode: this is new
@@ -395,6 +403,12 @@ static __fi void _HwWrite_16or32_Page1( u32 addr, T val )
 				DmaExec(4);
 			break;
 
+			mcase(0x1f8010d8):	// DMA5 CHCR -- PIF (TOOL)
+				psxHu(addr) = val;
+				if (Pif::IsPresent())
+					DmaExec(5);
+			break;
+
 			mcase(0x1f8010e8):	// DMA6 CHCR -- OT clear
 				psxHu(addr) = val;
 				DmaExec(6);
@@ -439,9 +453,17 @@ static __fi void _HwWrite_16or32_Page1( u32 addr, T val )
 				//u32 tmp = (~val) & HW_DMA_ICR;
 				//u32 old = ((tmp ^ val) & 0xffffff) ^ tmp;
 				///psxHu(addr) = ((tmp ^ val) & 0xffffff) ^ tmp;
+				const u32 oldMaster = HW_DMA_ICR & 0x80000000;
 				u32 newtmp = (HW_DMA_ICR & 0xff000000) | (val & 0xffffff);
 				newtmp &= ~(val & 0x7F000000);
-				if (((newtmp >> 15) & 0x1) || (((newtmp >> 23) & 0x1) == 0x1 && (((newtmp & 0x7F000000) >> 8) & (newtmp & 0x7F0000)) != 0)) {
+				// The master flag also covers ICR2's channels (SIF0/SIF1 always count, see
+				// psxDmaInterrupt2). Code that acks I_STAT bit 3 itself (intrman's exit path,
+				// the TOOL's DECI2DRS polling its DMA2) then turns the master enable off and on
+				// again so that a flag still pending raises the IRQ again; without ICR2 here,
+				// a SIF1 completion caught in that window was lost. Needs proper testing.
+				const u32 icr2 = HW_DMA_ICR2;
+				const bool icr2Pending = (((icr2 >> 24) & (icr2 >> 16) & 0x3f) | ((icr2 >> 24) & 0xc)) != 0;
+				if (((newtmp >> 15) & 0x1) || (((newtmp >> 23) & 0x1) == 0x1 && ((((newtmp & 0x7F000000) >> 8) & (newtmp & 0x7F0000)) != 0 || icr2Pending))) {
 					newtmp |= 0x80000000;
 				}
 				else {
@@ -457,6 +479,8 @@ static __fi void _HwWrite_16or32_Page1( u32 addr, T val )
 				}
 				else {
 					psxDmaInterrupt(33);
+					if (!oldMaster && (newtmp & 0x80000000))
+						iopIntcIrq(3);
 				}
 			}
 			break;
@@ -557,7 +581,10 @@ void iopHwWrite16_Page3( u32 addr, mem16_t val )
 {
 	// all addresses are assumed to be prefixed with 0x1f803xxx:
 	pxAssert( (addr >> 12) == 0x1f803 );
-	psxHu16(addr) = val;
+	if (Pif::Handles(addr))
+		Pif::Write16(addr, val);
+	else
+		psxHu16(addr) = val;
 	IopHwTraceLog<mem16_t>( addr, val, false );
 }
 
@@ -580,7 +607,10 @@ void iopHwWrite32_Page3( u32 addr, mem32_t val )
 {
 	// all addresses are assumed to be prefixed with 0x1f803xxx:
 	pxAssert( (addr >> 12) == 0x1f803 );
-	psxHu16(addr) = val;
+	if (Pif::Handles(addr))
+		Pif::Write32(addr, val);
+	else
+		psxHu16(addr) = val;
 	IopHwTraceLog<mem32_t>( addr, val, false );
 }
 

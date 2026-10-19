@@ -9,6 +9,7 @@
 #include "R5900.h"
 #include "ps2/BiosTools.h"
 #include "VMManager.h"
+#include "ps2/Iop/Pif.h"
 
 #include <ctype.h>
 #include <fmt/format.h>
@@ -532,6 +533,10 @@ namespace R3000A
 
 		bool is_host(const std::string_view path)
 		{
+			// With a TOOL ROM, host: belongs to the ROM's DECI2FILE driver and the real host.
+			if (Pif::IsPresent())
+				return false;
+
 			auto not_number_pos = path.find_first_not_of("0123456789", 4);
 			if (not_number_pos == std::string::npos)
 				return false;

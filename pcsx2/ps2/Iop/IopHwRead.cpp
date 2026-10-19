@@ -14,6 +14,7 @@
 #include "IopDma.h"
 
 #include "ps2/pgif.h"
+#include "ps2/Iop/Pif.h"
 #include "Mdec.h"
 
 #define SIO0LOG_ENABLE 0
@@ -111,7 +112,7 @@ mem8_t iopHwRead8_Page3(u32 addr)
 			ret = 0x7c;
 			break;
 		default:
-			ret = psxHu8(addr);
+			ret = Pif::Handles(addr) ? Pif::Read8(addr) : psxHu8(addr);
 			break;
 	}
 
@@ -247,6 +248,11 @@ static __fi T _HwRead_16or32_Page1( u32 addr )
 	// ------------------------------------------------------------------------
 	// PS1 GPU access
 	//
+	else if ( (masked_addr >= pgmsk(HW_PS1_GPU_START)) && (masked_addr < pgmsk(HW_PS1_GPU_END)) && ToolSif2::Active() )
+	{
+		// TOOL: this is SIF2's IOP DMA channel, not the PS1 GPU.
+		ret = static_cast<T>(ToolSif2::IopRead(addr, sizeof(T)));
+	}
 	else if ( (masked_addr >= pgmsk(HW_PS1_GPU_START)) && (masked_addr < pgmsk(HW_PS1_GPU_END)) )
 	{
 		// todo: psx mode: this is new
@@ -374,7 +380,7 @@ mem16_t iopHwRead16_Page3( u32 addr )
 	// all addresses are assumed to be prefixed with 0x1f803xxx:
 	pxAssume( (addr >> 12) == 0x1f803 );
 
-	mem16_t ret = psxHu16(addr);
+	mem16_t ret = Pif::Handles(addr) ? Pif::Read16(addr) : psxHu16(addr);
 	IopHwTraceLog<mem16_t>( addr, ret, true );
 	return ret;
 }
@@ -404,7 +410,7 @@ mem32_t iopHwRead32_Page3( u32 addr )
 {
 	// all addresses are assumed to be prefixed with 0x1f803xxx:
 	pxAssume( (addr >> 12) == 0x1f803 );
-	const mem32_t ret = psxHu32(addr);
+	const mem32_t ret = Pif::Handles(addr) ? Pif::Read32(addr) : psxHu32(addr);
 	IopHwTraceLog<mem32_t>( addr, ret, true );
 	return ret;
 }

@@ -647,6 +647,15 @@
     <ClCompile Include="ps2\Iop\IopHwRead.cpp">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClCompile>
+    <ClCompile Include="ps2\Iop\Pif.cpp">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClCompile>
+    <ClCompile Include="ps2\Iop\PifBridge.cpp">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClCompile>
+    <ClCompile Include="ps2\Iop\ToolSif2.cpp">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClCompile>
     <ClCompile Include="ps2\Iop\IopHwWrite.cpp">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClCompile>
@@ -1593,6 +1602,9 @@
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="ps2\Iop\IopHw_Internal.h">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="ps2\Iop\Pif.h">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\Ps1CD.h">

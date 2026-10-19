@@ -260,6 +260,10 @@ static dma_mbc&		hw_dma12	= (dma_mbc&) iopHw[0x1550];
 #define HW_DMA4_CHCR (psxHu32(0x10c8))
 #define HW_DMA4_TADR (psxHu32(0x10cc))
 
+#define HW_DMA5_MADR (psxHu32(0x10d0)) // PIF DMA (TOOL)
+#define HW_DMA5_BCR  (psxHu32(0x10d4))
+#define HW_DMA5_CHCR (psxHu32(0x10d8))
+
 #define HW_DMA6_MADR (psxHu32(0x10e0)) // GPU DMA (OT)
 #define HW_DMA6_BCR  (psxHu32(0x10e4))
 #define HW_DMA6_CHCR (psxHu32(0x10e8))
@@ -311,6 +315,7 @@ enum IopEventId
 	IopEvt_CdvdSectorReady,
 	IopEvt_DEV9,
 	IopEvt_USB,
+	IopEvt_PIF,		// TOOL bridge polling
 };
 
 extern void PSX_INT( IopEventId n, s32 ecycle);

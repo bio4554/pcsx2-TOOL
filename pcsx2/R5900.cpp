@@ -9,6 +9,7 @@
 #include "R5900.h"
 #include "R3000A.h"
 #include "ps2/pgif.h" // pgif init
+#include "ps2/Iop/Pif.h"
 #include "VUmicro.h"
 #include "COP0.h"
 #include "MTVU.h"
@@ -284,9 +285,13 @@ static __fi bool _cpuTestInterrupts()
 
 		if (cpuRegs.interrupt & ((1 << DMAC_VIF0) | (1 << DMAC_FROM_IPU) | (1 << DMAC_TO_IPU)
 			| (1 << DMAC_FROM_SPR) | (1 << DMAC_TO_SPR) | (1 << DMAC_MFIFO_VIF) | (1 << DMAC_MFIFO_GIF)
-			| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS)))
+			| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS) | (1 << DMAC_SIF2)))
 		{
 			TESTINT(DMAC_VIF0, vif0Interrupt);
+
+			// Only the TOOL's SIF2 schedules this; sif2.cpp's PS1-mode path never did.
+			if (ToolSif2::Active())
+				TESTINT(DMAC_SIF2, EEsif2Interrupt);
 
 			TESTINT(DMAC_FROM_IPU, ipu0Interrupt);
 			TESTINT(DMAC_TO_IPU, ipu1Interrupt);

@@ -6,6 +6,7 @@
 #include "Gif_Unit.h"
 #include "IopHw.h"
 #include "IopMem.h"
+#include "ps2/Iop/Pif.h"
 
 #include "ps2/HwInternal.h"
 #include "ps2/eeHwTraceLog.inl"
@@ -162,10 +163,12 @@ void _hwWrite32( u32 mem, u32 value )
 
 				mcase(SBUS_F220):
 					psHu32(mem) |= value;
+					ToolSif2::OnFlagWrite("EE sets MS", value);
 				return;
 
 				mcase(SBUS_F230):
 					psHu32(mem) &= ~value;
+					ToolSif2::OnFlagWrite("EE clears SM", value);
 				return;
 
 				mcase(SBUS_F240):
@@ -195,7 +198,12 @@ void _hwWrite32( u32 mem, u32 value )
 #if PSX_EXTRALOGS
 					DevCon.Warning("Write  SBUS_F260  %x ", psHu32(SBUS_F260));
 #endif
-					psHu32(mem) = value;
+					// The TOOL kernel writes 0xff at SIF2 init and later treats bit 2 as a SIF2
+					// bus error, so it looks write-1-to-clear there. Needs proper testing.
+					if (ToolSif2::Active())
+						psHu32(mem) &= ~value;
+					else
+						psHu32(mem) = value;
 				return;
 
 				// TODO: psx handling is done in the default case. Keep the code until we decide if we decide which interface to use (sif2/Pgif dma)

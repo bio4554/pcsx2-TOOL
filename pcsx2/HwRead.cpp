@@ -164,7 +164,9 @@ mem32_t _hwRead32(u32 mem)
 							//MCH_RICM: x:4|SA:12|x:5|SDEV:1|SOP:4|SBC:1|SDEV:5
 
 							case 0x21://INIT
-								if(rdram_sdevid < rdram_devices)
+								// Devkit (TOOL) memory has 8 RDRAM devices (128MB), retail has 2 (32MB).
+								// The EE kernel sizes RAM by counting devices here. Needs proper testing.
+								if(rdram_sdevid < (memGetExtraMemMode() ? 8 : rdram_devices))
 								{
 									rdram_sdevid++;
 									return 0x1F;

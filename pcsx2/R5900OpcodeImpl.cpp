@@ -13,6 +13,7 @@
 #include "DebugTools/Breakpoints.h"
 #include "Host.h"
 #include "VMManager.h"
+#include "ps2/Iop/Pif.h"
 
 #include "fmt/format.h"
 
@@ -1132,7 +1133,10 @@ void SYSCALL()
 			{
 				eeConLog(ShiftJIS_ConvertString((char*)PSM(memRead32(cpuRegs.GPR.n.a1.UL[0]))));
 			}
-			else
+			// With a TOOL ROM the kernel's real DECI2 manager does the work and the host sees
+			// the output; this HLE would write into the program's socket (reqsend clears a
+			// word of it) and break that.
+			else if (!Pif::IsPresent())
 				__Deci2Call(cpuRegs.GPR.n.a0.UL[0], (u32*)PSM(cpuRegs.GPR.n.a1.UL[0]));
 
 			break;

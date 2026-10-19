@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "Sif.h"
 #include "IopHw.h"
+#include "ps2/Iop/Pif.h"
 
 _sif sif2;
 
@@ -338,6 +339,12 @@ __fi void SIF2Dma()
 
 __fi void  sif2Interrupt()
 {
+	if (ToolSif2::Active())
+	{
+		ToolSif2::IopInterrupt();
+		return;
+	}
+
 	if (!sif2.iop.end || sif2.iop.counter > 0)
 	{
 		SIF2Dma();
@@ -351,12 +358,20 @@ __fi void  sif2Interrupt()
 
 __fi void  EEsif2Interrupt()
 {
+	if (ToolSif2::Active())
+		ToolSif2::EeInterrupt();
 	hwDmacIrq(DMAC_SIF2);
 	sif2dma.chcr.STR = false;
 }
 
 __fi void dmaSIF2()
 {
+	if (ToolSif2::Active())
+	{
+		ToolSif2::EeStart();
+		return;
+	}
+
 	DevCon.Warning("SIF2 EE CHCR %x", sif2dma.chcr._u32);
 	SIF_LOG("dmaSIF2%s", sif2dma.cmqt_to_str().c_str());
 

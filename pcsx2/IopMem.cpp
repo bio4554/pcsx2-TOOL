@@ -8,6 +8,7 @@
 #include "SPU2/spu2.h"
 #include "DEV9/DEV9.h"
 #include "IopHw.h"
+#include "ps2/Iop/Pif.h"
 
 uptr *psxMemWLUT = nullptr;
 const uptr *psxMemRLUT = nullptr;
@@ -419,10 +420,12 @@ void iopMemWrite32(u32 mem, u32 value)
 
 					case 0x20:		// Bits cleared when written from IOP.
 						psHu32(SBUS_F220) &= ~value;
+						ToolSif2::OnFlagWrite("IOP clears MS", value);
 						return;
 
 					case 0x30:		// bits set when written from IOP
 						psHu32(SBUS_F230) |= value;
+						ToolSif2::OnFlagWrite("IOP sets SM", value);
 						return;
 
 					case 0x40:		// Control Register
