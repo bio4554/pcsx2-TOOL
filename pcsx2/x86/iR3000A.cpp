@@ -84,7 +84,7 @@ static bool s_recompilingDelaySlot = false;
 static void iPsxBranchTest(u32 newpc, u32 cpuBranch);
 
 // IOP hardware breakpoints (COP0 DCIC/BPC/BPCM/BDA/BDAM). Instructions matching the BPC/BPCM the
-// code was compiled for, and every load/store while data breakpoints were enabled at compile time,
+// code was compiled for, and every store while data breakpoints were enabled at compile time,
 // get a call to psxRecBreakpoint in front of them. A DCIC/BPC/BPCM write that enables something the
 // compiled code doesn't cover requests a reset, done at the next recExecuteBlock (a reset from
 // inside a block would overwrite the code being run). Needs proper testing.
@@ -121,10 +121,11 @@ static bool psxRecInstBreakpointNeeded(u32 addr)
 	return s_psxRecPceCompiled && ((addr ^ s_psxRecBpcCompiled) & s_psxRecBpcmCompiled) == 0;
 }
 
-static bool psxRecIsLoadStore(u32 code)
+// Data breakpoints only ever trigger on stores (see psxCheckDataBreakpoint).
+static bool psxRecIsStore(u32 code)
 {
 	const u32 op = code >> 26;
-	return (op >= 0x20 && op <= 0x26) || (op >= 0x28 && op <= 0x2e) || op == 0x32 || op == 0x3a;
+	return (op >= 0x28 && op <= 0x2e) || op == 0x3a;
 }
 
 // Called from recompiled code with everything flushed; `addrbd` is the instruction address with bit 0
@@ -1590,7 +1591,7 @@ void psxRecompileNextInstruction(bool delayslot, bool swapped_delayslot)
 	// IOP hardware breakpoints: psxpc is this instruction's address here, delay slot or not.
 	{
 		const u32 code = iopMemRead32(psxpc);
-		if (psxRecInstBreakpointNeeded(psxpc) || (s_psxRecDataBpCompiled && psxRecIsLoadStore(code)))
+		if (psxRecInstBreakpointNeeded(psxpc) || (s_psxRecDataBpCompiled && psxRecIsStore(code)))
 		{
 			_psxFlushCall(FLUSH_EVERYTHING);
 			xFastCall((void*)psxRecBreakpoint, psxpc | (delayslot ? 1u : 0u), code);

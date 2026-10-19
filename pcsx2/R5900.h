@@ -425,7 +425,9 @@ extern void cpuDebugException(bool bd);
 extern bool cpuCheckInstBreakpoint();
 extern bool cpuCheckDataBreakpoint(u32 code);
 extern bool g_cpuDbgLoadArmed; // a load matched DAB while DVE is set; value check pending
-extern bool cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc, bool deferred);
+extern bool g_cpuDbgSkidPending; // an imprecise data value hit waits for its skid to end
+extern void cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc);
+extern bool cpuDataBreakpointSkidTick(bool bd);
 extern void cpuDisarmDataBreakpoint();
 extern void cpuTlbMissR(u32 addr, u32 bd);
 extern void cpuTlbMissW(u32 addr, u32 bd);

@@ -202,21 +202,26 @@ bool cpuCheckInstBreakpoint()
 	if ((cpuRegs.pc & mask) != (cpuRegs.DBG.n.iab & mask))
 		return false;
 
-	cpuRegs.DBG.n.bpc |= BPC_IAB;
+	// On the TOOL, BED suppresses the IAB flag too (the manual's figure 9-3 sets it first).
 	if (bpc & BPC_BED)
 		return false;
+	cpuRegs.DBG.n.bpc |= BPC_IAB;
 	cpuDebugException(cpuRegs.branch != 0);
 	return true;
 }
 
-// Data breakpoints (manual 9.2.3-9.2.5, figure 9-4). An address match is precise: the exception is
-// taken before the load/store. A value match on a store is precise too (the value is in a register).
-// A value match on a load needs the loaded data, so the load completes first and the exception is
-// taken before the next instruction: the hardware's "imprecise" case. Its exact skid on hardware is
-// unknown (TOOL check); SWC1/SQC2 value hits, imprecise on hardware, are precise here.
+// Data breakpoints (manual 9.2.3-9.2.5, figure 9-4), adjusted to what the TOOL does (docs/06, M8b):
+// - An address match is precise: the exception is taken before the load/store. BED suppresses both
+//   the exception and the DRB/DWB flag.
+// - A value match ignores BED.
+// - A value match on a GPR store is precise (the value is in a register).
+// - A value match on a load, or on SWC1/SQC2, is imprecise: the access completes, two more instructions
+//   run, and the exception is taken at the start of the third (the skid seen on the TOOL; with a
+//   branch in the window the count includes the branch and its delay slot).
 bool g_cpuDbgLoadArmed = false; // read by recompiled code
+bool g_cpuDbgSkidPending = false; // read by recompiled code
 static u32 s_dbgLoadArmedPc = 0;
-static bool s_dbgPending = false;
+static u32 s_dbgSkid = 0;
 
 // Effective address as the breakpoint unit sees it (quadword accesses ignore the low 4 bits).
 static u32 cpuDataBreakpointAddress(u32 code)
@@ -245,13 +250,18 @@ static u32 cpuDataBreakpointValue(u32 code)
 	}
 }
 
-static bool cpuDataBreakpointHit(bool store, bool bd)
+static bool cpuDataValueMatches(u32 code)
 {
-	cpuRegs.DBG.n.bpc |= store ? BPC_DWB : BPC_DRB;
-	if (cpuRegs.DBG.n.bpc & BPC_BED)
-		return false;
-	cpuDebugException(bd);
-	return true;
+	const u32 vmask = cpuRegs.DBG.n.dvbm;
+	return (cpuDataBreakpointValue(code) & vmask) == (cpuRegs.DBG.n.dvb & vmask);
+}
+
+// Start the skid of an imprecise hit, counted from the end of the current instruction.
+static void cpuDataBreakpointStartSkid(u32 flag)
+{
+	cpuRegs.DBG.n.bpc |= flag;
+	g_cpuDbgSkidPending = true;
+	s_dbgSkid = 2;
 }
 
 // Before the load/store `code` at cpuRegs.pc. Returns true when the debug exception was taken
@@ -267,51 +277,63 @@ bool cpuCheckDataBreakpoint(u32 code)
 	if ((cpuDataBreakpointAddress(code) & mask) != (cpuRegs.DBG.n.dab & mask))
 		return false;
 
-	if (bpc & BPC_DVE)
+	if (!(bpc & BPC_DVE))
 	{
-		if (!store)
-		{
-			g_cpuDbgLoadArmed = true;
-			s_dbgLoadArmedPc = cpuRegs.pc;
+		if (bpc & BPC_BED)
 			return false;
-		}
-		const u32 vmask = cpuRegs.DBG.n.dvbm;
-		if ((cpuDataBreakpointValue(code) & vmask) != (cpuRegs.DBG.n.dvb & vmask))
-			return false;
+		cpuRegs.DBG.n.bpc |= store ? BPC_DWB : BPC_DRB;
+		cpuDebugException(cpuRegs.branch != 0);
+		return true;
 	}
-	return cpuDataBreakpointHit(store, cpuRegs.branch != 0);
+
+	if (!store)
+	{
+		g_cpuDbgLoadArmed = true;
+		s_dbgLoadArmedPc = cpuRegs.pc;
+		return false;
+	}
+	if (!cpuDataValueMatches(code))
+		return false;
+	const u32 op = code >> 26;
+	if (op == 0x39 || op == 0x3E) // SWC1/SQC2: imprecise
+	{
+		cpuDataBreakpointStartSkid(BPC_DWB);
+		return false;
+	}
+	cpuRegs.DBG.n.bpc |= BPC_DWB;
+	cpuDebugException(cpuRegs.branch != 0);
+	return true;
 }
 
-// After the load `code` at `loadpc` completed (cpuRegs.pc must then be the next instruction).
-// `deferred`: the load was in a delay slot, so the exception waits for the next event test,
-// once the branch has reached its target. Returns true when the exception was taken now.
-bool cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc, bool deferred)
+// After the armed load `code` at `loadpc` completed: the value check; a match starts the skid.
+void cpuCheckDataBreakpointAfterLoad(u32 code, u32 loadpc)
 {
 	if (!g_cpuDbgLoadArmed)
-		return false;
+		return;
 	g_cpuDbgLoadArmed = false;
-	if (s_dbgLoadArmedPc != loadpc)
-		return false;
-	const u32 vmask = cpuRegs.DBG.n.dvbm;
-	if ((cpuDataBreakpointValue(code) & vmask) != (cpuRegs.DBG.n.dvb & vmask))
-		return false;
-
-	cpuRegs.DBG.n.bpc |= BPC_DRB;
-	if (cpuRegs.DBG.n.bpc & BPC_BED)
-		return false;
-	if (deferred)
-	{
-		s_dbgPending = true;
-		cpuRegs.nextEventCycle = 0; // force an event test at the end of the branch
-		return false;
-	}
-	cpuDebugException(false);
-	return true;
+	if (s_dbgLoadArmedPc == loadpc && cpuDataValueMatches(code))
+		cpuDataBreakpointStartSkid(BPC_DRB);
 }
 
 void cpuDisarmDataBreakpoint()
 {
 	g_cpuDbgLoadArmed = false;
+}
+
+// At the start of the instruction at cpuRegs.pc while a skid is pending (`bd`: it's in a delay
+// slot). True when the debug exception was taken instead of running it.
+bool cpuDataBreakpointSkidTick(bool bd)
+{
+	if (!g_cpuDbgSkidPending)
+		return false;
+	if (s_dbgSkid > 0)
+	{
+		s_dbgSkid--;
+		return false;
+	}
+	g_cpuDbgSkidPending = false;
+	cpuDebugException(bd);
+	return true;
 }
 
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
@@ -518,13 +540,14 @@ __fi void _cpuEventTest_Shared()
 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
 	cpuRegs.lastEventCycle = cpuRegs.cycle;
 
-	// A data value breakpoint hit by a load in a delay slot, taken now that cpuRegs.pc is the
-	// branch's destination (see cpuCheckDataBreakpointAfterLoad).
-	if (s_dbgPending)
+	// An imprecise data value hit whose skid has run out is due at this instruction: a debug
+	// exception (level 2) goes before any interrupt.
+	if (g_cpuDbgSkidPending && s_dbgSkid == 0)
 	{
-		s_dbgPending = false;
+		g_cpuDbgSkidPending = false;
 		cpuDebugException(false);
 	}
+
 	// ---- INTC / DMAC (CPU-level Exceptions) -----------------
 	// Done first because exceptions raised during event tests need to be postponed a few
 	// cycles (fixes Grandia II [PAL], which does a spin loop on a vsync and expects to

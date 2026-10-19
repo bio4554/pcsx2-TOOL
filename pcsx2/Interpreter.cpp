@@ -171,7 +171,10 @@ static void execI()
 	CBreakPoints::CommitClearSkipFirst(BREAKPOINT_EE);
 #endif
 
-	// EE hardware instruction breakpoint (COP0 BPC/IAB/IABM).
+	// EE hardware breakpoints: a pending imprecise data value hit first, then the instruction
+	// breakpoint (COP0 BPC/IAB/IABM).
+	if (g_cpuDbgSkidPending && cpuDataBreakpointSkidTick(cpuRegs.branch != 0))
+		return;
 	if ((cpuRegs.DBG.n.bpc & BPC_IAE) && cpuCheckInstBreakpoint())
 		return;
 
@@ -237,7 +240,7 @@ static void execI()
 	if (dataBreakpoint && g_cpuDbgLoadArmed)
 	{
 		if (cpuRegs.pc == pc + 4)
-			cpuCheckDataBreakpointAfterLoad(cpuRegs.code, pc, cpuRegs.branch != 0);
+			cpuCheckDataBreakpointAfterLoad(cpuRegs.code, pc);
 		else
 			cpuDisarmDataBreakpoint();
 	}

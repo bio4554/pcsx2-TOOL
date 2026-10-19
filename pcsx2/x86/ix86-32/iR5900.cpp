@@ -1742,15 +1742,35 @@ static bool recDataBreakpoint(u32 addrbd, u32 code)
 	return false;
 }
 
-static bool recDataBreakpointAfterLoad(u32 addrbd, u32 code)
+// At the start of an instruction while an imprecise data value hit's skid is pending.
+static bool recDataBreakpointSkidTick(u32 addrbd)
 {
-	const u32 addr = addrbd & ~3u;
 	const u32 oldpc = cpuRegs.pc;
-	cpuRegs.pc = addr + 4; // the next instruction (unused when deferred)
-	if (cpuCheckDataBreakpointAfterLoad(code, addr, (addrbd & 1) != 0))
+	const int oldbranch = cpuRegs.branch;
+	cpuRegs.pc = addrbd & ~3u;
+	cpuRegs.branch = addrbd & 1;
+	if (cpuDataBreakpointSkidTick((addrbd & 1) != 0))
 		return true;
 	cpuRegs.pc = oldpc;
+	cpuRegs.branch = oldbranch;
 	return false;
+}
+
+// Instructions still to get a skid tick: the first 3 of each block (a skid can cross a block
+// boundary) and the 3 after each load/SWC1/SQC2, while data breakpoints are compiled in.
+static u32 s_recSkidWindow = 0;
+
+static void encodeDataBreakpointSkidTick(u32 addr, bool delayslot)
+{
+	iFlushCall(FLUSH_EVERYTHING);
+	xCMP(ptr8[&g_cpuDbgSkidPending], 0);
+	xForwardJZ32 notPending;
+	xFastCall((void*)recDataBreakpointSkidTick, addr | (delayslot ? 1u : 0u));
+	xTEST(al, al);
+	xForwardJZ32 notTaken;
+	iBranchTest(); // leave the block for the debug vector
+	notPending.SetTarget();
+	notTaken.SetTarget();
 }
 
 // Before a load/store: inline filter ((ea ^ DAB) & DABM) == 0, then the full check.
@@ -1773,18 +1793,14 @@ static void encodeDataBreakpoint(u32 addr, u32 code, bool delayslot)
 	notTaken.SetTarget();
 }
 
-// After a load: the data value check, when the pre-check armed it.
-static void encodeDataBreakpointAfterLoad(u32 addr, u32 code, bool delayslot)
+// After a load: the data value check, when the pre-check armed it (a match starts the skid).
+static void encodeDataBreakpointAfterLoad(u32 addr, u32 code)
 {
 	iFlushCall(FLUSH_EVERYTHING);
 	xCMP(ptr8[&g_cpuDbgLoadArmed], 0);
 	xForwardJZ32 notArmed;
-	xFastCall((void*)recDataBreakpointAfterLoad, addr | (delayslot ? 1u : 0u), code);
-	xTEST(al, al);
-	xForwardJZ32 notTaken;
-	iBranchTest(); // leave the block for the debug vector
+	xFastCall((void*)cpuCheckDataBreakpointAfterLoad, code, addr);
 	notArmed.SetTarget();
-	notTaken.SetTarget();
 }
 
 bool encodeBreakpoint()
@@ -1853,6 +1869,11 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	}
 
 	// pc is this instruction's address here, delay slot or not.
+	if (s_recSkidWindow)
+	{
+		s_recSkidWindow--;
+		encodeDataBreakpointSkidTick(pc, delayslot);
+	}
 	if (recInstBreakpointNeeded(pc))
 		encodeInstBreakpoint(pc, delayslot);
 	const u32 insnpc = pc;
@@ -2014,7 +2035,9 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	_validateRegs();
 
 	if (dataBpFlags & IS_LOAD)
-		encodeDataBreakpointAfterLoad(insnpc, insncode, delayslot);
+		encodeDataBreakpointAfterLoad(insnpc, insncode);
+	if ((dataBpFlags & IS_LOAD) || (insncode >> 26) == 0x39 || (insncode >> 26) == 0x3E) // imprecise kinds
+		s_recSkidWindow = s_recDataBpCompiled ? 3 : 0;
 
 	if (delayslot)
 	{
@@ -2417,6 +2440,9 @@ static void recRecompile(const u32 startpc)
 		xFastCall((void*)eeloadHook2);
 
 	g_branch = 0;
+
+	// A data value breakpoint's skid may have started in the previous block.
+	s_recSkidWindow = s_recDataBpCompiled ? 3 : 0;
 
 	// reset recomp state variables
 	s_nBlockCycles = 0;

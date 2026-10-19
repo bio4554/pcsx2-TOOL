@@ -95,11 +95,12 @@ void psxException(u32 code, u32 bd)
 	}*/
 }
 
-// IOP hardware breakpoints (DCIC, LR33300-style). The debug exception goes to 0x80000040 (0xBFC00140
-// with BEV), where the ROM's excepman stub saves EPC/Cause/SR/DCIC to 0x420 and dispatches through
-// exception slot 15 to DECI2. Cause.ExcCode = 9 (Bp) and data breakpoints stopping before the access
-// are assumptions, as is the BPCM/BDAM sense (1 = compare); trace (TE/TAR) isn't modelled.
-// Needs proper testing against the TOOL.
+// IOP hardware breakpoints (DCIC; bit names as dsidb prints them). The debug exception goes to
+// 0x80000040 (0xBFC00140 with BEV), where the ROM's excepman stub saves EPC/Cause/SR/DCIC to 0x420 and
+// dispatches through exception slot 15 to DECI2. Checked on the TOOL (docs/06, M8b): Cause.ExcCode = 9
+// (Bp), EPC = the instruction, BPCM/BDAM 1 = compare; bit 30 enables PC breaks in any mode, bit 29
+// doesn't; data reads never trigger. Data writes stopping before the access is an assumption (a
+// match-all write hung DECI2 on the TOOL, so they do fire). Trace (TE/TAR) isn't modelled.
 void psxDebugException(bool bd)
 {
 	psxRegs.CP0.n.Cause = (psxRegs.CP0.n.Cause & ~(0x7cu | 0x80000000u)) | (9u << 2) | (bd ? 0x80000000u : 0);
@@ -108,10 +109,11 @@ void psxDebugException(bool bd)
 	psxRegs.CP0.n.Status = (psxRegs.CP0.n.Status & ~0x3f) | ((psxRegs.CP0.n.Status & 0xf) << 2);
 }
 
+// dsidb's "UD" (bit 30) is the master enable for PC and data breaks, in kernel mode too; its "KD"
+// (bit 29) enables neither (on the PS1's core it's the master enable for trace, per psx-spx).
 static __fi bool psxBreakpointModeEnabled(u32 dcic)
 {
-	const bool user = (psxRegs.CP0.n.Status & 2) != 0; // KUc
-	return (dcic & (user ? DCIC_UD : DCIC_KD)) != 0;
+	return (dcic & DCIC_UD) != 0;
 }
 
 static bool psxBreakpointHit(u32 flags, bool bd)
@@ -138,18 +140,16 @@ bool psxCheckInstBreakpoint(bool bd)
 bool psxCheckDataBreakpoint(u32 code, bool bd)
 {
 	const u32 op = code >> 26;
-	const bool load = (op >= 0x20 && op <= 0x26) || op == 0x32;
 	const bool store = (op >= 0x28 && op <= 0x2e) || op == 0x3a;
-	if (!load && !store)
+	if (!store) // reads never trigger on the TOOL, even with BDAM 0
 		return false;
 	const u32 dcic = psxRegs.CP0.r[7];
-	if ((dcic & (DCIC_DE | DCIC_DAE)) != (DCIC_DE | DCIC_DAE) || !(dcic & (store ? DCIC_DW : DCIC_DR)) ||
-		!psxBreakpointModeEnabled(dcic))
+	if ((dcic & (DCIC_DE | DCIC_DAE | DCIC_DW)) != (DCIC_DE | DCIC_DAE | DCIC_DW) || !psxBreakpointModeEnabled(dcic))
 		return false;
 	const u32 ea = psxRegs.GPR.r[(code >> 21) & 31] + static_cast<s32>(static_cast<s16>(code));
 	if ((ea ^ psxRegs.CP0.r[5]) & psxRegs.CP0.r[9])
 		return false;
-	return psxBreakpointHit(DCIC_DA | (store ? DCIC_W : DCIC_R), bd);
+	return psxBreakpointHit(DCIC_DA | DCIC_W, bd);
 }
 
 __fi void psxSetNextBranch( u64 startCycle, s32 delta )
