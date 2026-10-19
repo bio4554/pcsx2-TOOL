@@ -14,3 +14,5 @@ extern void MapTLB(const tlbs& t, int i);
 
 extern void COP0_UpdatePCCR();
 extern void COP0_DiagnosticPCCR();
+
+extern void COP0_WriteDebugReg(u32 value, u32 sel);

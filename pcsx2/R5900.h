@@ -109,6 +109,24 @@ union CP0regs {
 	u32 r[32];
 };
 
+// Breakpoint registers (COP0 register 24), indexed by the MTC0/MFC0 low 3 bits (EE Core User's Manual 9.2).
+union DBGregs {
+	struct {
+		u32 bpc, unused, iab, iabm, dab, dabm, dvb, dvbm;
+	} n;
+	u32 r[8];
+};
+
+// BPC bits.
+enum : u32 {
+	BPC_IAE = 1u << 31, BPC_DRE = 1u << 30, BPC_DWE = 1u << 29, BPC_DVE = 1u << 28,
+	BPC_IUE = 1u << 26, BPC_ISE = 1u << 25, BPC_IKE = 1u << 24, BPC_IXE = 1u << 23,
+	BPC_DUE = 1u << 21, BPC_DSE = 1u << 20, BPC_DKE = 1u << 19, BPC_DXE = 1u << 18,
+	BPC_ITE = 1u << 17, BPC_DTE = 1u << 16, BPC_BED = 1u << 15,
+	BPC_DWB = 1u << 2, BPC_DRB = 1u << 1, BPC_IAB = 1u << 0,
+	BPC_WRITABLE = 0xF7BF8007,
+};
+
 struct cpuRegisters {
 	GPRregs GPR;		// GPR regs
 	// NOTE: don't change order since recompiler uses it
@@ -135,6 +153,8 @@ struct cpuRegisters {
 	u64 lastEventCycle;
 	u64 lastCOP0Cycle;
 	u64 lastPERFCycle[2];
+
+	DBGregs DBG;
 };
 
 // used for optimization

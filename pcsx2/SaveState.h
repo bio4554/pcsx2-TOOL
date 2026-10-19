@@ -26,7 +26,8 @@ enum class FreezeAction
 // [SAVEVERSION+]
 // This informs the auto updater that the users savestates will be invalidated.
 
-static const u32 g_SaveVersion = (0x9A59 << 16) | 0x0000;
+// TOOL fork: bumped for cpuRegs.DBG (EE breakpoint registers).
+static const u32 g_SaveVersion = (0x9A5A << 16) | 0x0000;
 
 
 // the freezing data between submodules and core

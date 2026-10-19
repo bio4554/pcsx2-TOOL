@@ -188,7 +188,8 @@ void recMFC0()
 	}
 	else if (_Rd_ == 24)
 	{
-		COP0_LOG("MFC0 Breakpoint debug Registers code = %x\n", cpuRegs.code & 0x3FF);
+		const int regt = _allocX86reg(X86TYPE_GPR, _Rt_, MODE_WRITE);
+		xMOVSX(xRegister64(regt), ptr32[&cpuRegs.DBG.r[cpuRegs.code & 7]]);
 		return;
 	}
 
@@ -256,7 +257,8 @@ void recMTC0()
 				break;
 
 			case 24:
-				COP0_LOG("MTC0 Breakpoint debug Registers code = %x\n", cpuRegs.code & 0x3FF);
+				iFlushCall(FLUSH_INTERPRETER);
+				xFastCall((void*)COP0_WriteDebugReg, g_cpuConstRegs[_Rt_].UL[0], cpuRegs.code & 7);
 				break;
 
 			default:
@@ -323,7 +325,10 @@ void recMTC0()
 				break;
 
 			case 24:
-				COP0_LOG("MTC0 Breakpoint debug Registers code = %x\n", cpuRegs.code & 0x3FF);
+				_eeMoveGPRtoR(arg1reg, _Rt_);
+				iFlushCall(FLUSH_INTERPRETER);
+				xMOV(arg2regd, cpuRegs.code & 7);
+				xFastCall((void*)COP0_WriteDebugReg);
 				break;
 
 			default:

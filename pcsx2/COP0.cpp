@@ -104,6 +104,22 @@ void COP0_DiagnosticPCCR()
 	if (cpuRegs.PERF.n.pccr.b.Event1 >= 7 && cpuRegs.PERF.n.pccr.b.Event1 <= 10)
 		Console.Warning("PERF/PCR1 Unsupported Update Event Mode = 0x%x", cpuRegs.PERF.n.pccr.b.Event1);
 }
+
+// MTBPC/MTIAB/MTIABM/MTDAB/MTDABM/MTDVB/MTDVBM (COP0 register 24, selected by the low 3 bits of the opcode).
+// Reserved BPC bits and the low 2 bits of IAB/IABM read as zero per the EE Core User's Manual 9.2;
+// not yet confirmed on hardware.
+void COP0_WriteDebugReg(u32 value, u32 sel)
+{
+	switch (sel & 7)
+	{
+		case 0: cpuRegs.DBG.n.bpc = value & BPC_WRITABLE; break;
+		case 1: break;
+		case 2: cpuRegs.DBG.n.iab = value & ~3u; break;
+		case 3: cpuRegs.DBG.n.iabm = value & ~3u; break;
+		default: cpuRegs.DBG.r[sel & 7] = value; break;
+	}
+	COP0_LOG("MTC0 debug register %u = %08x", sel & 7, cpuRegs.DBG.r[sel & 7]);
+}
 extern int branch;
 __fi void COP0_UpdatePCCR()
 {
@@ -518,7 +534,7 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 				break;
 
 			case 24:
-				COP0_LOG("MFC0 Breakpoint debug Registers code = %x", cpuRegs.code & 0x3FF);
+				cpuRegs.GPR.r[_Rt_].SD[0] = (s32)cpuRegs.DBG.r[cpuRegs.code & 7];
 				break;
 
 			case 9:
@@ -557,7 +573,7 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 				break;
 
 			case 24:
-				COP0_LOG("MTC0 Breakpoint debug Registers code = %x", cpuRegs.code & 0x3FF);
+				COP0_WriteDebugReg(cpuRegs.GPR.r[_Rt_].UL[0], cpuRegs.code & 7);
 				break;
 
 			case 25:
