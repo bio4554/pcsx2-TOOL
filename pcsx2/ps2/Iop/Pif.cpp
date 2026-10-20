@@ -8,6 +8,7 @@
 #include "ps2/BiosTools.h"
 #include "ps2/Iop/Pif.h"
 #include "VUmicro.h"
+#include "Vif.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -303,6 +304,10 @@ namespace Pif
 		const char* shift = std::getenv("PCSX2_VU1_CLOCK_SHIFT");
 		g_vu1ClockShift = (IsPresent() && shift && std::atoi(shift)) ? 1 : 0;
 		g_vuMirrorTpc = IsPresent();
+
+		// VIF1's FIFO keeps taking DMA while the VIF waits (Vif1_Dma.cpp); PCSX2_VIF1_FIFO=0 turns it off.
+		const char* vif1_fifo = std::getenv("PCSX2_VIF1_FIFO");
+		g_vif1FifoModel = IsPresent() && !(vif1_fifo && vif1_fifo[0] == '0');
 
 		// The mVU flag hack leaves the VU status flag stale wherever the microprogram doesn't read it (a VU
 		// debugger's register view, EE-side reads): off in TOOL mode unless PCSX2_VU_FLAG_HACK=1.

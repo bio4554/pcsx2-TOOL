@@ -11,6 +11,95 @@
 
 u32 g_vif1Cycles = 0;
 
+// TOOL mode: VIF1's FIFO, 16 qwords between DMA channel 1 and the VIF (docs/09 D5, D9). Elsewhere PCSX2 has
+// the VIF decode straight from memory, so while the VIF waits (on VU1, on the GIF, at an i-bit stall) the DMA
+// waits with it. On the DTL-T10000 the DMA goes on filling the FIFO meanwhile, following its tags, and the
+// channel ends once all of its data is in. Here vif1FifoFill runs the DMA into s_vif1Fifo when the VIF is
+// blocked (vifTransfer copies instead of decoding), and the VIF decodes the FIFO before it reads memory again.
+// As on a slice channel (EE User's Manual 5.2), the DMA moves data up to the next 8-qword boundary in memory
+// at a time, and only while the FIFO has 8 qwords free; a tag's TTE words go along in order but take no room
+// (the TOOL's FQC 9 at D9's stall is the 6 + 3 data qwords of the two cnt tags after it). EE writes to the
+// FIFO port queue behind it as well (the kernel's RDIMG does both).
+// Not modelled: MFIFO mode, transfers to memory, a DMA started during an i-bit stall, an EE write waiting for
+// room; FQC counts every data word the VIF hasn't decoded (D5: 11 here, 8 on the TOOL). Needs proper testing
+// beyond those cases.
+bool g_vif1FifoModel = false;
+bool g_vif1FifoCapture = false;
+bool g_vif1FifoDrain = false;
+
+static constexpr u32 VIF1_FIFO_WORDS = 16 * 4;
+static constexpr u32 VIF1_SLICE_WORDS = 8 * 4;
+
+static struct
+{
+	u32 words[VIF1_FIFO_WORDS * 2]; // data, and the TTE words between it
+	u8 tte[VIF1_FIFO_WORDS * 2];
+	u32 count;
+	u32 data; // words that take room in the FIFO
+} s_vif1Fifo;
+
+// Room left in the FIFO, in words (EE writes to a full FIFO can take it past 16 qwords).
+static u32 vif1FifoFree()
+{
+	return s_vif1Fifo.data < VIF1_FIFO_WORDS ? VIF1_FIFO_WORDS - s_vif1Fifo.data : 0;
+}
+
+u32 vif1FifoPush(const u32* data, u32 size, bool tte)
+{
+	u32 n = std::min(size, static_cast<u32>(std::size(s_vif1Fifo.words)) - s_vif1Fifo.count);
+	if (!tte)
+	{
+		// up to the end of this slice: the next 8-qword boundary in memory
+		const u32 slice = (128 - (reinterpret_cast<uptr>(data) & 127)) / 4;
+		n = std::min({n, slice, vif1FifoFree()});
+		s_vif1Fifo.data += n;
+	}
+	std::memcpy(&s_vif1Fifo.words[s_vif1Fifo.count], data, n * 4);
+	std::memset(&s_vif1Fifo.tte[s_vif1Fifo.count], tte, n);
+	s_vif1Fifo.count += n;
+	return n;
+}
+
+static void vif1FifoSetFQC()
+{
+	vif1Regs.stat.FQC = std::min(16u, (s_vif1Fifo.data + 3) / 4);
+}
+
+// A qword the EE writes to the FIFO port (0x10005000). False when the VIF should decode it at once, as
+// elsewhere in PCSX2: the FIFO is empty and the VIF isn't waiting.
+bool vif1FifoTakeCpuWrite(const u32* qword)
+{
+	if (!g_vif1FifoModel || dmacRegs.ctrl.MFD == MFD_VIF1)
+		return false;
+	if (!s_vif1Fifo.count && !vif1.waitforvu && !vif1Regs.stat.VGW && !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
+		return false;
+
+	// On the TOOL a write to a full FIFO waits; here it goes in anyway, as far as the buffer allows.
+	if (std::size(s_vif1Fifo.words) - s_vif1Fifo.count < 4)
+	{
+		Console.Warning("VIF1 FIFO: an EE write found the FIFO full; dropped");
+		return true;
+	}
+	std::memcpy(&s_vif1Fifo.words[s_vif1Fifo.count], qword, 16);
+	std::memset(&s_vif1Fifo.tte[s_vif1Fifo.count], 0, 4);
+	s_vif1Fifo.count += 4;
+	s_vif1Fifo.data += 4;
+	vif1FifoSetFQC();
+	return true;
+}
+
+u32 vif1FifoCount()
+{
+	return s_vif1Fifo.count;
+}
+
+void vif1FifoClear()
+{
+	s_vif1Fifo.count = 0;
+	s_vif1Fifo.data = 0;
+}
+
+
 __fi void vif1FLUSH()
 {
 	// T or D bit stop (the Stop state: to the VIF it is the same as running, VU User's Manual 1.3.3) or busy
@@ -218,6 +307,90 @@ __fi void vif1SetupTransfer()
 	}
 }
 
+// The VIF can't take data: the DMA goes on into the FIFO until it is full or the transfer is over, and then
+// the channel ends, with the VIF still to decode it.
+static void vif1FifoFill()
+{
+	if (!g_vif1FifoModel || dmacRegs.ctrl.MFD == MFD_VIF1 || !vif1ch.chcr.DIR)
+		return;
+
+	if (vif1ch.chcr.STR)
+	{
+		g_vif1FifoCapture = true;
+		while (vif1FifoFree() >= VIF1_SLICE_WORDS)
+		{
+			if (vif1.inprogress & 0x1)
+			{
+				const u32 count = s_vif1Fifo.count;
+				const u32 qwc = vif1ch.qwc;
+				_VIF1chain();
+				if (s_vif1Fifo.count == count && vif1ch.qwc == qwc && (vif1.inprogress & 0x1))
+					break;
+				continue;
+			}
+
+			// A tag's TTE words go in whole.
+			if (vif1.done || !dmacRegs.ctrl.DMAE || vif1Regs.stat.VSS || std::size(s_vif1Fifo.words) - s_vif1Fifo.count < 4)
+				break;
+
+			const u32 tadr = vif1ch.tadr;
+			vif1SetupTransfer();
+			if (!(vif1.inprogress & 0x1) && !vif1.done && vif1ch.tadr == tadr)
+				break; // stall control or a bad tag
+		}
+		g_vif1FifoCapture = false;
+
+		if (vif1.done && !(vif1.inprogress & 0x1))
+		{
+			VIF_LOG("VIF1 DMA End (%u words left in the FIFO)", s_vif1Fifo.count);
+			vif1ch.chcr.STR = false;
+			vif1.irqoffset.value = 0;
+			vif1.irqoffset.enabled = false;
+			hwDmacIrq(DMAC_VIF1);
+			CPU_SET_DMASTALL(DMAC_VIF1, false);
+		}
+	}
+
+	vif1FifoSetFQC();
+}
+
+// Decodes what the FIFO holds. True when the VIF should go on reading memory: the FIFO is empty and the
+// channel is still running.
+static bool vif1FifoDecode()
+{
+	const u32 decoded = VIF1transferFifo(s_vif1Fifo.words, s_vif1Fifo.count);
+	for (u32 i = 0; i < decoded; i++)
+		s_vif1Fifo.data -= !s_vif1Fifo.tte[i];
+	s_vif1Fifo.count -= decoded;
+	std::memmove(s_vif1Fifo.words, &s_vif1Fifo.words[decoded], s_vif1Fifo.count * 4);
+	std::memmove(s_vif1Fifo.tte, &s_vif1Fifo.tte[decoded], s_vif1Fifo.count);
+	vif1FifoSetFQC();
+
+	if (s_vif1Fifo.count)
+	{
+		// The VIF stopped again; the next pass sees why.
+		CPU_INT(DMAC_VIF1, std::max(4, static_cast<int>(g_vif1Cycles)));
+		return false;
+	}
+
+	if (!vif1ch.chcr.STR)
+	{
+		// The channel ended with this data: the VIF is done, once an i bit on the last code has fired.
+		if (vif1.vifstalled.enabled && vif1.vifstalled.value == VIF_IRQ_STALL)
+		{
+			CPU_INT(DMAC_VIF1, std::max(4, static_cast<int>(g_vif1Cycles)));
+			return false;
+		}
+		vif1Regs.stat.VPS = vif1.cmd ? VPS_WAITING : VPS_IDLE;
+		if (vif1.queued_program)
+			vifExecQueue(1);
+		g_vif1Cycles = 0;
+		return false;
+	}
+
+	return true;
+}
+
 __fi void vif1VUFinish()
 {
 	// Sync up VU1 so we don't errantly wait.
@@ -263,7 +436,7 @@ __fi void vif1VUFinish()
 	{
 		vif1.waitforvu = false;
 		//Check if VIF is already scheduled to interrupt, if it's waiting, kick it :P
-		if ((cpuRegs.interrupt & ((1 << DMAC_VIF1) | (1 << DMAC_MFIFO_VIF))) == 0 && vif1ch.chcr.STR && !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
+		if ((cpuRegs.interrupt & ((1 << DMAC_VIF1) | (1 << DMAC_MFIFO_VIF))) == 0 && (vif1ch.chcr.STR || s_vif1Fifo.count) && !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
 		{
 			if (dmacRegs.ctrl.MFD == MFD_VIF1)
 				vifMFIFOInterrupt();
@@ -315,6 +488,7 @@ __fi void vif1Interrupt()
 			if (gifRegs.stat.APATH == 3)
 				vif1Regs.stat.VGW = 1; //We're waiting for path 3. Gunslinger II
 			CPU_SET_DMASTALL(DMAC_VIF1, true);
+			vif1FifoFill();
 			return;
 		}
 		vif1Regs.stat.VGW = 0; //Path 3 isn't busy so we don't need to wait for it.
@@ -328,16 +502,19 @@ __fi void vif1Interrupt()
 		//CPU_INT(DMAC_VIF1, 16);
 		CPU_INT(VIF_VU1_FINISH, std::max(16, cpuGetCycles(VU_MTVU_BUSY)));
 		CPU_SET_DMASTALL(DMAC_VIF1, true);
+		vif1FifoFill();
 		return;
 	}
 
 	if (vif1Regs.stat.VGW)
 	{
 		CPU_SET_DMASTALL(DMAC_VIF1, true);
+		vif1FifoFill();
 		return;
 	}
 
-	if (!vif1ch.chcr.STR)
+	// TOOL mode: with the channel ended, the FIFO or an i bit on its last code can still be left.
+	if (!vif1ch.chcr.STR && !s_vif1Fifo.count && !(g_vif1FifoModel && vif1.irq && vif1.vifstalled.enabled))
 	{
 		Console.WriteLn("Vif1 running when CHCR == %x", vif1ch.chcr._u32);
 		return;
@@ -365,15 +542,19 @@ __fi void vif1Interrupt()
 			//NFSHPS stalls when the whole packet has gone across (it stalls in the last 32bit cmd)
 			//In this case VIF will end
 			vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
-			if ((vif1ch.qwc > 0 || !vif1.done) && !CHECK_VIF1STALLHACK)
+			if ((vif1ch.qwc > 0 || !vif1.done || s_vif1Fifo.count) && !CHECK_VIF1STALLHACK)
 			{
 				vif1Regs.stat.VPS = VPS_DECODING; //If there's more data you need to say it's decoding the next VIF CMD (Onimusha - Blade Warriors)
 				VIF_LOG("VIF1 Stalled");
 				CPU_SET_DMASTALL(DMAC_VIF1, true);
+				vif1FifoFill();
 				return;
 			}
 		}
 	}
+
+	if (g_vif1FifoModel && !vif1ch.chcr.STR && !s_vif1Fifo.count)
+		return; // the i bit has fired; nothing is left
 
 	vif1.vifstalled.enabled = false;
 
@@ -387,6 +568,10 @@ __fi void vif1Interrupt()
 	{
 		vif1Regs.stat.VPS = VPS_IDLE;
 	}
+
+	// TOOL mode: what the FIFO took while the VIF was blocked comes first.
+	if (s_vif1Fifo.count && !vif1FifoDecode())
+		return;
 
 	if (vif1.inprogress & 0x1)
 	{
@@ -407,6 +592,8 @@ __fi void vif1Interrupt()
 			else
 				CPU_INT(DMAC_VIF1, g_vif1Cycles);
 		}
+		else
+			vif1FifoFill(); // no pass until the GIF frees PATH3: the DMA fills the FIFO now
 		return;
 	}
 
@@ -435,6 +622,8 @@ __fi void vif1Interrupt()
 			else
 				CPU_INT(DMAC_VIF1, g_vif1Cycles);
 		}
+		else
+			vif1FifoFill(); // no pass until the GIF frees PATH3: the DMA fills the FIFO now
 		return;
 	}
 

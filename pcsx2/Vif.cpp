@@ -26,6 +26,7 @@ void vif1Reset()
 	/* Reset the whole VIF, meaning the internal pcsx2 vars, and all the registers */
 	std::memset(&vif1, 0, sizeof(vif1));
 	std::memset(&vif1Regs, 0, sizeof(vif1Regs));
+	vif1FifoClear();
 
 	resetNewVif(1);
 }
@@ -197,7 +198,7 @@ __fi void vif1FBRST(u32 value)
 			case MFD_RESERVED:
 			case MFD_GIF: // Wonder if this should be with VIF?
 				// Gets the timing right - Flatout
-				if (vif1ch.chcr.STR && !vif1Regs.stat.test(VIF1_STAT_FDR))
+				if ((vif1ch.chcr.STR || vif1FifoCount()) && !vif1Regs.stat.test(VIF1_STAT_FDR))
 					CPU_INT(DMAC_VIF1, 0);
 				break;
 			}
@@ -232,6 +233,7 @@ __fi void vif1FBRST(u32 value)
 		vif1.cmd = 0;
 		vif1.vifstalled.enabled = false;
 		vif1Regs.stat._u32 = 0;
+		vif1FifoClear();
 	}
 }
 

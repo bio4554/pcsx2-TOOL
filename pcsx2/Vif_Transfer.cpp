@@ -49,7 +49,7 @@ _vifT void vifTransferLoop(u32* &data) {
 		if (vifX.vifstalled.enabled)
 		{
 			int current_STR = idx ? vif1ch.chcr.STR : vif0ch.chcr.STR;
-			if (!current_STR)
+			if (!current_STR && !(idx && g_vif1FifoDrain))
 				DevCon.Warning("Warning! VIF%d stalled during FIFO transfer!", idx);
 		}
 	}
@@ -62,7 +62,12 @@ _vifT static __fi bool vifTransfer(u32 *data, int size, bool TTE) {
 	int transferred = vifX.irqoffset.enabled ? vifX.irqoffset.value : 0;
 
 	vifX.vifpacketsize = size;
-	vifTransferLoop<idx>(data);
+	// TOOL mode: the VIF is blocked and the DMA goes on into its FIFO (Vif1_Dma.cpp).
+	const bool capture = idx && g_vif1FifoCapture;
+	if (capture)
+		vifX.vifpacketsize -= vif1FifoPush(data, size, TTE);
+	else
+		vifTransferLoop<idx>(data);
 
 	transferred += size - vifX.vifpacketsize;
 
@@ -73,7 +78,7 @@ _vifT static __fi bool vifTransfer(u32 *data, int size, bool TTE) {
 
 	vifX.irqoffset.value = transferred % 4; // cannot lose the offset
 
-	if (vifX.irq && vifX.cmd == 0) {
+	if (vifX.irq && vifX.cmd == 0 && !capture) {
 		VIF_LOG("Vif%d IRQ Triggering", idx);
 		//Always needs to be set to return to the correct offset if there is data left.
 		vifX.vifstalled.enabled = VifStallEnable(vifXch);
@@ -104,6 +109,9 @@ _vifT static __fi bool vifTransfer(u32 *data, int size, bool TTE) {
 			vifX.irqoffset.enabled = false;
 	}
 
+	if (capture)
+		return true;
+
 	vifExecQueue(idx);
 
 	return !vifX.vifstalled.enabled;
@@ -115,4 +123,26 @@ bool VIF0transfer(u32 *data, int size, bool TTE) {
 }
 bool VIF1transfer(u32 *data, int size, bool TTE) {
 	return vifTransfer<1>(data, size, TTE);
+}
+
+// TOOL mode: decodes words VIF1 took into its FIFO earlier (Vif1_Dma.cpp). No DMA bookkeeping: the DMA
+// moved them already. Returns the number of words decoded.
+u32 VIF1transferFifo(u32* data, u32 size)
+{
+	g_vif1FifoDrain = true;
+	vif1.vifpacketsize = size;
+	vifTransferLoop<1>(data);
+	g_vif1FifoDrain = false;
+
+	const u32 decoded = size - vif1.vifpacketsize;
+	g_vif1Cycles += std::max(1, (int)((decoded * BIAS) >> 2));
+
+	if (vif1.irq && vif1.cmd == 0)
+	{
+		vif1.vifstalled.enabled = true;
+		vif1.vifstalled.value = VIF_IRQ_STALL;
+	}
+
+	vifExecQueue(1);
+	return decoded;
 }

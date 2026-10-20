@@ -232,11 +232,22 @@ static VIFregisters& vif1Regs = (VIFregisters&)eeHw[0x3C00];
 #define  MTVU_VifX     (idx ? ((THREAD_VU1) ? vu1Thread.vif     : vif1)     : (vif0))
 #define  MTVU_VifXRegs (idx ? ((THREAD_VU1) ? vu1Thread.vifRegs : vif1Regs) : (vif0Regs))
 
-#define VifStallEnable(vif) (vif.chcr.STR);
+// TOOL mode's VIF1 FIFO (Vif1_Dma.cpp): g_vif1FifoModel is set in Pif::Reset; while the VIF decodes what
+// the FIFO holds, its stalls take effect even though the DMA channel may have ended already.
+extern bool g_vif1FifoModel;
+extern bool g_vif1FifoCapture;
+extern bool g_vif1FifoDrain;
+
+#define VifStallEnable(vif) (vif.chcr.STR || g_vif1FifoDrain);
 
 extern void dmaVIF0();
 extern void dmaVIF1();
 extern void mfifoVIF1transfer();
 extern bool VIF0transfer(u32 *data, int size, bool TTE=0);
 extern bool VIF1transfer(u32 *data, int size, bool TTE=0);
+extern u32 VIF1transferFifo(u32* data, u32 size);
+extern u32 vif1FifoPush(const u32* data, u32 size, bool tte);
+extern u32 vif1FifoCount();
+extern bool vif1FifoTakeCpuWrite(const u32* qword);
+extern void vif1FifoClear();
 extern void vifMFIFOInterrupt();

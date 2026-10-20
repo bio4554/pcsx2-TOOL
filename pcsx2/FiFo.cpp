@@ -92,6 +92,10 @@ void WriteFIFO_VIF1(const mem128_t* value)
 		DevCon.Warning("Offset on VIF1 FIFO start!");
 	}
 
+	// TOOL mode: behind what the FIFO already holds, or while the VIF waits, the write queues (Vif1_Dma.cpp).
+	if (vif1FifoTakeCpuWrite(value->_u32))
+		return;
+
 	[[maybe_unused]] bool ret = VIF1transfer((u32*)value, 4);
 
 	if (vif1.cmd)
