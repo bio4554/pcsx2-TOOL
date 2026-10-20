@@ -27,6 +27,7 @@
 #include "common/Path.h"
 #include "common/Perf.h"
 #include "DebugTools/Breakpoints.h"
+#include "ps2/Iop/Pif.h"
 
 //#define DUMP_BLOCKS 1
 //#define TRACE_BLOCKS 1
@@ -80,6 +81,22 @@ static EEINST* s_psaveInstInfo = nullptr;
 u32 s_psxBlockCycles = 0; // cycles of current block recompiling
 static u32 s_savenBlockCycles = 0;
 static bool s_recompilingDelaySlot = false;
+
+// TOOL mode: the IOP RAM words inside a compiled block, one bit each. The LUT only marks block starts,
+// so a write inside a block (a debugger's planted break, e.g. in a branch delay slot) didn't clear it.
+// Set at compile time, cleared at a rec reset only: a stale bit costs one block lookup.
+static u32 s_psxRecCodeMap[Ps2MemSize::TotalIopRam / 4 / 32];
+
+static __fi bool psxRecInCompiledBlock(u32 hwaddr)
+{
+	return hwaddr < Ps2MemSize::TotalIopRam && (s_psxRecCodeMap[hwaddr >> 7] & (1u << ((hwaddr >> 2) & 31)));
+}
+
+static void psxRecMarkCompiled(u32 hwaddr, u32 size)
+{
+	for (u32 a = hwaddr; a < hwaddr + size && a < Ps2MemSize::TotalIopRam; a += 4)
+		s_psxRecCodeMap[a >> 7] |= 1u << ((a >> 2) & 31);
+}
 
 static void iPsxBranchTest(u32 newpc, u32 cpuBranch);
 
@@ -1029,6 +1046,7 @@ void recResetIOP()
 
 	iopClearRecLUT(reinterpret_cast<BASEBLOCK*>(recLutReserve.data()),
 		Ps2MemSize::ExposedIopRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
+	std::memset(s_psxRecCodeMap, 0, sizeof(s_psxRecCodeMap));
 
 	BASEBLOCK* unmapped = recLutUnmapped.data();
 
@@ -1152,14 +1170,17 @@ static __fi u32 psxRecClearMem(u32 pc)
 
 	pblock = PSX_GETBLOCK(pc);
 	// if ((u8*)iopJITCompile == pblock->GetFnptr())
-	if (pblock->GetFnptr() == (uptr)iopJITCompile)
+	const bool blockstart = pblock->GetFnptr() != (uptr)iopJITCompile;
+	if (!blockstart && !psxRecInCompiledBlock(HWADDR(pc)))
 		return 4;
 
 	pc = HWADDR(pc);
 
 	u32 lowerextent = pc, upperextent = pc + 4;
 	int blockidx = recBlocks.Index(pc);
-	pxAssert(blockidx != -1);
+	pxAssert(blockidx != -1 || !blockstart);
+	if (blockidx == -1) // a stale code map bit: that block was cleared already
+		return 4;
 
 	while (BASEBLOCKEX* pexblock = recBlocks[blockidx - 1])
 	{
@@ -1355,7 +1376,8 @@ void rpsxSYSCALL()
 
 	//xMOV( ecx, 0x20 );			// exception code
 	//xMOV( edx, psxbranch==1 );	// branch delay slot?
-	xFastCall((void*)psxException, 0x20, psxbranch == 1);
+	// psxbranch is only set once the delay slot is compiled.
+	xFastCall((void*)psxException, 0x20, s_recompilingDelaySlot);
 
 	xCMP(ptr32[&psxRegs.pc], psxpc - 4);
 	j8Ptr[0] = JE8(0);
@@ -1378,7 +1400,7 @@ void rpsxBREAK()
 
 	//xMOV( ecx, 0x24 );			// exception code
 	//xMOV( edx, psxbranch==1 );	// branch delay slot?
-	xFastCall((void*)psxException, 0x24, psxbranch == 1);
+	xFastCall((void*)psxException, 0x24, s_recompilingDelaySlot);
 
 	xCMP(ptr32[&psxRegs.pc], psxpc - 4);
 	j8Ptr[0] = JE8(0);
@@ -1904,6 +1926,8 @@ StartRecomp:
 
 	pxAssert((psxpc - startpc) >> 2 <= 0xffff);
 	s_pCurBlockEx->size = (psxpc - startpc) >> 2;
+	if (Pif::IsPresent())
+		psxRecMarkCompiled(s_pCurBlockEx->startpc, s_pCurBlockEx->size * 4);
 
 	if (!(psxpc & 0x10000000))
 		g_psxMaxRecMem = std::max((psxpc & ~0xa0000000), g_psxMaxRecMem);

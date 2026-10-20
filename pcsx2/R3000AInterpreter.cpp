@@ -347,16 +347,11 @@ static __fi void execI()
 		}
 	}
 
-	// IOP hardware breakpoints (COP0 DCIC). In a delay slot, doBranch would overwrite the vector
-	// with the branch target, so redirect that too.
+	// IOP hardware breakpoints (COP0 DCIC). In a delay slot, doBranch keeps the vector.
 	if (psxRegs.CP0.r[7] & DCIC_DE)
 	{
 		if (psxCheckInstBreakpoint(iopIsDelaySlot) || psxCheckDataBreakpoint(iopMemRead32(psxRegs.pc), iopIsDelaySlot))
-		{
-			if (iopIsDelaySlot)
-				branchPC = psxRegs.pc;
 			return;
-		}
 	}
 
 	psxRegs.code = iopMemRead32(psxRegs.pc);
@@ -399,10 +394,14 @@ static void doBranch(s32 tar) {
 
 	branch2 = iopIsDelaySlot = true;
 	branchPC = tar;
+	const u32 slotpc = psxRegs.pc;
 	execI();
 	PSXCPU_LOG( "\n" );
 	iopIsDelaySlot = false;
-	psxRegs.pc = branchPC;
+	// An exception in the delay slot (break, syscall, a DCIC breakpoint) has moved pc to its vector,
+	// with EPC = the branch: keep it. (A branch in the slot has set pc already, to branchPC.)
+	if (psxRegs.pc == slotpc + 4)
+		psxRegs.pc = branchPC;
 
 	iopEventTest();
 }

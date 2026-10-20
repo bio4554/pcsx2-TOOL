@@ -62,8 +62,8 @@ void psxException(u32 code, u32 bd)
 {
 //	PSXCPU_LOG("psxException %x: %x, %x", code, psxHu32(0x1070), psxHu32(0x1074));
 	//Console.WriteLn("!! psxException %x: %x, %x", code, psxHu32(0x1070), psxHu32(0x1074));
-	// Set the Cause
-	psxRegs.CP0.n.Cause &= ~0x7f;
+	// Set the Cause (BD too: left over from a delay slot exception, it moved every later EPC)
+	psxRegs.CP0.n.Cause &= ~(0x7fu | 0x80000000u);
 	psxRegs.CP0.n.Cause |= code;
 
 	// Set the EPC & PC
