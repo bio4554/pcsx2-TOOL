@@ -420,6 +420,13 @@ void VU_Thread::Get_MTVUChanges()
 		//DevCon.Warning("T-Bit registered %x", VU0.VI[REG_VPU_STAT].UL);
 		hwIntcIrq(7);
 	}
+	if (interrupts & InterruptFlagVUDBit)
+	{
+		mtvuInterrupts.fetch_and(~InterruptFlagVUDBit, std::memory_order_relaxed);
+		VU0.VI[REG_VPU_STAT].UL &= ~0xFF00;
+		VU0.VI[REG_VPU_STAT].UL |= 0x0200;
+		hwIntcIrq(7);
+	}
 }
 
 void VU_Thread::KickStart()

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "ps2/Iop/Pif.h"
+
 using namespace x86Emitter;
 
 typedef xRegisterSSE xmm;
@@ -310,10 +312,12 @@ static constexpr bool doJumpAsSameProgram = false; // Set to true to treat jumps
 // Note: You MUST disable doJumpCaching if you enable this option.
 
 // Handling of D-Bit in Micro Programs
-static constexpr bool doDBitHandling = false;
+static inline bool doDBitHandling() { return Pif::IsPresent(); }
 // This flag shouldn't be enabled in released versions of games. Any games which
 // need this method of pausing the VU should be using the T-Bit instead, however
 // this could prove useful for VU debugging.
+// TOOL mode (the PIF is present): on for the TOOL kernel's VU debugging (DBGCTL sets FBRST DE), with a D or T bit in
+// a branch delay slot stopping there too (ps2-research docs/09 D1, D4). Retail code is compiled as before.
 
 // Whole program comparison on search
 static constexpr bool doWholeProgCompare = false;

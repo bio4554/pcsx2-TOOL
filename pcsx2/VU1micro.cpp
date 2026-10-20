@@ -8,6 +8,7 @@
 #include <cmath>
 #include "VUmicro.h"
 #include "MTVU.h"
+#include "ps2/Iop/Pif.h"
 
 #ifdef PCSX2_DEBUG
 u32 vudump = 0;
@@ -60,6 +61,14 @@ void vu1ExecMicro(u32 addr)
 		// }
 		// Update 25/06/2022: Disabled this for now, let games YOLO it, if it breaks MTVU, disable MTVU (it doesn't work properly anyway) - Refraction
 		vu1Thread.ExecuteVU(addr, vif1Regs.top, vif1Regs.itop, VU0.VI[REG_FBRST].UL);
+		// TOOL mode with VU1 debug mode on (FBRST DE1): wait for the program's end or D-bit stop, so that VDS1 is set
+		// before VIF1 can start another program and the kernel sees the stop (ps2-research docs/09 D2, D8). It costs
+		// MTVU's overlap only while VU1 is being debugged. Needs proper testing.
+		if (Pif::IsPresent() && (VU0.VI[REG_FBRST].UL & 0x400))
+		{
+			vu1Thread.WaitVU();
+			vu1Thread.Get_MTVUChanges();
+		}
 		return;
 	}
 	static int count = 0;
@@ -81,5 +90,5 @@ void vu1ExecMicro(u32 addr)
 
 void MTVUInterrupt()
 {
-	VU0.VI[REG_VPU_STAT].UL &= ~0xFF00;
+	VU0.VI[REG_VPU_STAT].UL &= ~0xFD00; // a D-bit stop (VDS1) stays until VU1 is started again or reset
 }

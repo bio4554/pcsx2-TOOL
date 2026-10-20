@@ -44,6 +44,7 @@ public:
 		InterruptFlagLabel  = 1 << 2,
 		InterruptFlagVUEBit = 1 << 3,
 		InterruptFlagVUTBit = 1 << 4,
+		InterruptFlagVUDBit = 1 << 5,
 	};
 
 	std::atomic<u32> mtvuInterrupts; // Used for GS Signal, Finish etc, plus VU End/T-Bit

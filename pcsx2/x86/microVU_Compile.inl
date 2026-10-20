@@ -570,7 +570,7 @@ void mVUDoDBit(microVU& mVU, microFlagCycles* mFC)
 		xOR(ptr32[&mVU.regs().flags], VUFLAG_INTCINTERRUPT);
 	}
 	incPC(1);
-	mVUDTendProgram(mVU, mFC, 1);
+	mVUDTendProgram(mVU, mFC, 1, true);
 	incPC(-1);
 	eJMP.SetTarget();
 }
@@ -904,7 +904,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 			{
 				mVUDoTBit(mVU, &mFC);
 			}
-			else if (mVUup.dBit && doDBitHandling)
+			else if (mVUup.dBit && doDBitHandling())
 			{
 				mVUDoDBit(mVU, &mFC);
 			}
@@ -930,6 +930,15 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 				incPC(-2);
 				goto perf_and_return;
 			}
+		}
+		else if (mVUinfo.isBdelay && !mVUlow.branch && doDBitHandling())
+		{
+			// A D or T bit in a delay slot stops the VU after the slot and the branch is lost (TPC = the slot + 8), as on
+			// the TOOL. Needs proper testing.
+			if (mVUup.tBit)
+				mVUDoTBit(mVU, &mFC);
+			else if (mVUup.dBit)
+				mVUDoDBit(mVU, &mFC);
 		}
 
 		if (mVUinfo.doXGKICK)

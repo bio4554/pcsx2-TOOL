@@ -1823,6 +1823,12 @@ void VMManager::Reset()
 	vu1Thread.WaitVU();
 	vu1Thread.Reset();
 	MTGS::WaitGS();
+	// hwReset() below drops MTVU's pending path 1 packets (Gif_Path_MTVU::Reset), so drop the VU thread's posts for
+	// them too; otherwise MTGS later takes a stale post for a packet that isn't there ("MTVU: Expected gsPackQueue to
+	// have elements!"). Seen with the TOOL bridge's NETMP reset after VU1 programs that don't use the GIF (p5test):
+	// their packets wait for the GIF (CanDoGif). Needs proper testing.
+	while (vu1Thread.semaXGkick.TryWait())
+		;
 
 	const bool elf_was_changed = (s_current_crc != 0);
 	ClearELFInfo();

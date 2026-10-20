@@ -17,7 +17,7 @@ __fi int getLastFlagInst(microRegInfo& pState, int* xFlag, int flagType, int isE
 void mVU0clearlpStateJIT() { if (!microVU0.prog.cleared) std::memset(&microVU0.prog.lpState, 0, sizeof(microVU1.prog.lpState)); }
 void mVU1clearlpStateJIT() { if (!microVU1.prog.cleared) std::memset(&microVU1.prog.lpState, 0, sizeof(microVU1.prog.lpState)); }
 
-void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
+void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit, bool isDbit = false)
 {
 
 	int fStatus = getLastFlagInst(mVUpBlock->pState, mFC->xStatus, 0, isEbit);
@@ -130,7 +130,7 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 	if (isEbit != 2) // Save PC, and Jump to Exit Point
 	{
 		if (mVU.index && THREAD_VU1)
-			xFastCall((void*)mVUTBit);
+			xFastCall(isDbit ? (void*)mVUDBit : (void*)mVUTBit);
 		xJMP(mVU.exitFunct);
 	}
 
@@ -332,7 +332,7 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 void normBranch(mV, microFlagCycles& mFC)
 {
 	// E-bit or T-Bit or D-Bit Branch
-	if (mVUup.dBit && doDBitHandling)
+	if (mVUup.dBit && doDBitHandling())
 	{
 		// Flush register cache early to avoid double flush on both paths
 		mVU.regAlloc->flushAll(false);
@@ -349,7 +349,7 @@ void normBranch(mV, microFlagCycles& mFC)
 			xOR(ptr32[&mVU.regs().flags], VUFLAG_INTCINTERRUPT);
 		}
 		iPC = branchAddr(mVU) / 4;
-		mVUDTendProgram(mVU, &mFC, 1);
+		mVUDTendProgram(mVU, &mFC, 1, true);
 		eJMP.SetTarget();
 		iPC = tempPC;
 	}
@@ -427,7 +427,9 @@ void condBranch(mV, microFlagCycles& mFC, int JMPcc)
 		}
 		mVUDTendProgram(mVU, &mFC, 2);
 		xCMP(ptr16[&mVU.branch], 0);
-		xForwardJump32 tJMP(xInvertCond((JccComparisonType)JMPcc));
+		// Jump to the taken side when the branch is taken (JMPcc, as below); this was inverted, so a T or D bit on a
+		// taken branch left TPC on the not-taken side (ps2-research docs/09 D1)
+		xForwardJump32 tJMP((JccComparisonType)JMPcc);
 			incPC(4); // Set PC to First instruction of Non-Taken Side
 			xMOV(ptr32[&mVU.regs().VI[REG_TPC].UL], xPC);
 			if (mVU.index && THREAD_VU1)
@@ -443,7 +445,7 @@ void condBranch(mV, microFlagCycles& mFC, int JMPcc)
 		eJMP.SetTarget();
 		iPC = tempPC;
 	}
-	if (mVUup.dBit && doDBitHandling)
+	if (mVUup.dBit && doDBitHandling())
 	{
 		u32 tempPC = iPC;
 		if (mVU.index  && THREAD_VU1)
@@ -458,14 +460,18 @@ void condBranch(mV, microFlagCycles& mFC, int JMPcc)
 		}
 		mVUDTendProgram(mVU, &mFC, 2);
 		xCMP(ptr16[&mVU.branch], 0);
-		xForwardJump32 dJMP(xInvertCond((JccComparisonType)JMPcc));
+		xForwardJump32 dJMP((JccComparisonType)JMPcc); // the taken side when taken, as for the T bit
 			incPC(4); // Set PC to First instruction of Non-Taken Side
 			xMOV(ptr32[&mVU.regs().VI[REG_TPC].UL], xPC);
+			if (mVU.index && THREAD_VU1)
+				xFastCall((void*)mVUDBit);
 			xJMP(mVU.exitFunct);
 		dJMP.SetTarget();
 		incPC(-4); // Go Back to Branch Opcode to get branchAddr
 		iPC = branchAddr(mVU) / 4;
 		xMOV(ptr32[&mVU.regs().VI[REG_TPC].UL], xPC);
+		if (mVU.index && THREAD_VU1)
+			xFastCall((void*)mVUDBit);
 		xJMP(mVU.exitFunct);
 		eJMP.SetTarget();
 		iPC = tempPC;
@@ -574,7 +580,7 @@ void normJump(mV, microFlagCycles& mFC)
 		normBranchCompile(mVU, jumpAddr);
 		return;
 	}
-	if (mVUup.dBit && doDBitHandling)
+	if (mVUup.dBit && doDBitHandling())
 	{
 		// Flush register cache early to avoid double flush on both paths
 		mVU.regAlloc->flushAll(false);
@@ -592,6 +598,8 @@ void normJump(mV, microFlagCycles& mFC)
 		mVUDTendProgram(mVU, &mFC, 2);
 		xMOV(gprT1, ptr32[&mVU.branch]);
 		xMOV(ptr32[&mVU.regs().VI[REG_TPC].UL], gprT1);
+		if (mVU.index && THREAD_VU1)
+			xFastCall((void*)mVUDBit);
 		xJMP(mVU.exitFunct);
 		eJMP.SetTarget();
 	}

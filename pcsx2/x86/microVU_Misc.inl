@@ -276,6 +276,12 @@ static void mVUTBit()
 		DevCon.Warning("Old TBit not registered");
 }
 
+// A D-bit stop on the VU thread (TOOL mode): Get_MTVUChanges sets VDS1 and raises INTC 7 on the EE side.
+static void mVUDBit()
+{
+	vu1Thread.mtvuInterrupts.fetch_or(VU_Thread::InterruptFlagVUDBit, std::memory_order_release);
+}
+
 static void mVUEBit()
 {
 	vu1Thread.mtvuInterrupts.fetch_or(VU_Thread::InterruptFlagVUEBit, std::memory_order_release);
