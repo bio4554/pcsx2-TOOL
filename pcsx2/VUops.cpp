@@ -8,6 +8,7 @@
 #include "MTVU.h"
 
 #include <cmath>
+#include <utility>
 u32 laststall = 0;
 //Lower/Upper instructions can use that..
 #define _Ft_ ((VU->code >> 16) & 0x1F)  // The rt part of the instruction register
@@ -124,6 +125,23 @@ static __ri bool _vuEFUflush(VURegs* VU)
 	}
 
 	return false;
+}
+
+// A D or T bit stop (FBRST DE/TE set) on the instruction pair at ptr, called before the pair executes (the
+// interpreters; ps2-research docs/09 D3/D4). VU User's Manual 7.3.1: the VU stops after this instruction and the next one is cancelled (no
+// delay slot, unlike the E bit), except that a branch still runs its delay slot and leaves its destination in TPC.
+// The real TOOL showed the other case: a D bit in a delay slot loses the branch, TPC = the slot + 8. Only D bits on
+// taken branches were checked there; T bits and branches not taken follow the manual's rule. Needs proper testing.
+void _vuDebugStop(VURegs* VU, const u32* ptr)
+{
+	if (VU->branch == 1) // in a delay slot
+	{
+		VU->branch = 0;
+		VU->takedelaybranch = false;
+	}
+	// B, BAL, JR, JALR and IBxx are lower opcodes 0x20-0x2f, when the I bit doesn't make the lower word a float.
+	const bool is_branch = !(ptr[1] & 0x80000000) && ((ptr[0] >> 25) & 0x70) == 0x20;
+	VU->ebit = is_branch ? 2 : 1;
 }
 
 // called at end of program
@@ -3219,15 +3237,25 @@ static void VU0regsMI_XITOP(_VURegsNum* VUregsn) { _vuRegsXITOP(&VU0, VUregsn); 
 static void VU0regsMI_XGKICK(_VURegsNum* VUregsn) { _vuRegsXGKICK(&VU0, VUregsn); }
 static void VU0regsMI_XTOP(_VURegsNum* VUregsn) { _vuRegsXTOP(&VU0, VUregsn); }
 
+static void _vuUnknownOpcode()
+{
+	// A Devel-build assertion stopped the emulator here; Release builds and the real VU run on. A debugger can resume
+	// a VU past its program (a D bit in a delay slot loses the branch, docs/09 D4), so warn once and run it as a nop.
+	static bool warned = false;
+	if (!std::exchange(warned, true))
+		Console.Warning("VU: unknown micromode opcode (run as a nop; warned once)");
+}
+
 void VU0unknown()
 {
-	pxFail("Unknown VU micromode opcode called");
+	_vuUnknownOpcode();
 	CPU_LOG("Unknown VU micromode opcode called");
 }
 
 static void VU0regsunknown(_VURegsNum* VUregsn)
 {
-	pxFail("Unknown VU micromode opcode called");
+	_vuUnknownOpcode();
+	*VUregsn = {}; // no registers, no pipe: a nop
 	CPU_LOG("Unknown VU micromode opcode called");
 }
 
@@ -3587,13 +3615,14 @@ static void VU1regsMI_XTOP(_VURegsNum* VUregsn) { _vuRegsXTOP(&VU1, VUregsn); }
 
 static void VU1unknown()
 {
-	pxFail("Unknown VU micromode opcode called");
+	_vuUnknownOpcode();
 	CPU_LOG("Unknown VU micromode opcode called");
 }
 
 static void VU1regsunknown(_VURegsNum* VUregsn)
 {
-	pxFail("Unknown VU micromode opcode called");
+	_vuUnknownOpcode();
+	*VUregsn = {}; // no registers, no pipe: a nop
 	CPU_LOG("Unknown VU micromode opcode called");
 }
 

@@ -8,6 +8,7 @@
 #include <cfenv>
 
 extern void _vuFlushAll(VURegs* VU);
+extern void _vuDebugStop(VURegs* VU, const u32* ptr);
 
 static void _vu0ExecUpper(VURegs* VU, u32* ptr)
 {
@@ -42,22 +43,23 @@ static void _vu0Exec(VURegs* VU)
 		VU->flags |= VUFLAG_MFLAGSET;
 		//		Console.WriteLn("fixme: M flag set");
 	}
-	if (ptr[1] & 0x10000000) // D flag
+	if (ptr[1] & 0x18000000) // D or T flag
 	{
-		if (VU0.VI[REG_FBRST].UL & 0x4)
+		bool stop = false;
+		if ((ptr[1] & 0x10000000) && (VU0.VI[REG_FBRST].UL & 0x4))
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x2;
-			hwIntcIrq(INTC_VU0);
-			VU->ebit = 1;
+			stop = true;
 		}
-	}
-	if (ptr[1] & 0x08000000) // T flag
-	{
-		if (VU0.VI[REG_FBRST].UL & 0x8)
+		if ((ptr[1] & 0x08000000) && (VU0.VI[REG_FBRST].UL & 0x8))
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x4;
+			stop = true;
+		}
+		if (stop)
+		{
 			hwIntcIrq(INTC_VU0);
-			VU->ebit = 1;
+			_vuDebugStop(VU, ptr);
 		}
 	}
 
@@ -187,7 +189,8 @@ static void _vu0Exec(VURegs* VU)
 			VU->VIBackupCycles = 0;
 			_vuFlushAll(VU);
 			VU0.VI[REG_VPU_STAT].UL &= ~0x1; /* E flag */
-			vif0Regs.stat.VEW = false;
+			if (!(VU0.VI[REG_VPU_STAT].UL & 0x6)) // a D or T bit stop: a waiting VIF0 goes on waiting
+				vif0Regs.stat.VEW = false;
 		}
 	}
 

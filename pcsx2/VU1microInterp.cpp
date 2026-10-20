@@ -11,6 +11,7 @@
 #include <cfenv>
 
 extern void _vuFlushAll(VURegs* VU);
+extern void _vuDebugStop(VURegs* VU, const u32* ptr);
 extern void _vuXGKICKFlush(VURegs* VU);
 
 void _vu1ExecUpper(VURegs* VU, u32* ptr)
@@ -42,22 +43,23 @@ static void _vu1Exec(VURegs* VU)
 	{
 		VU->ebit = 2;
 	}
-	if (ptr[1] & 0x10000000) // D flag
+	if (ptr[1] & 0x18000000) // D or T flag
 	{
-		if (VU0.VI[REG_FBRST].UL & 0x400)
+		bool stop = false;
+		if ((ptr[1] & 0x10000000) && (VU0.VI[REG_FBRST].UL & 0x400))
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x200;
-			hwIntcIrq(INTC_VU1);
-			VU->ebit = 1;
+			stop = true;
 		}
-	}
-	if (ptr[1] & 0x08000000) // T flag
-	{
-		if (VU0.VI[REG_FBRST].UL & 0x800)
+		if ((ptr[1] & 0x08000000) && (VU0.VI[REG_FBRST].UL & 0x800))
 		{
 			VU0.VI[REG_VPU_STAT].UL |= 0x400;
+			stop = true;
+		}
+		if (stop)
+		{
 			hwIntcIrq(INTC_VU1);
-			VU->ebit = 1;
+			_vuDebugStop(VU, ptr);
 		}
 	}
 
@@ -192,7 +194,10 @@ static void _vu1Exec(VURegs* VU)
 			VU->VIBackupCycles = 0;
 			_vuFlushAll(VU);
 			VU0.VI[REG_VPU_STAT].UL &= ~0x100;
-			vif1Regs.stat.VEW = false;
+			// After a D or T bit stop a waiting VIF1 goes on waiting (vif1FLUSH), and VIF1_STAT says so: the TOOL
+			// kernel takes VIF1 for busy, and refuses VU1 memory access, when VPS is set without VEW.
+			if (!(VU0.VI[REG_VPU_STAT].UL & 0x600))
+				vif1Regs.stat.VEW = false;
 
 			if(VU1.xgkickenable)
 				_vuXGKICKTransfer(0, true);

@@ -12,7 +12,8 @@ u32 g_vif0Cycles = 0;
 // because its vif stalling not the EE core...
 __fi void vif0FLUSH()
 {
-	if (VU0.VI[REG_VPU_STAT].UL & 0x5) // T bit stop or Busy
+	// T or D bit stop (the Stop state: to the VIF it is the same as running, VU User's Manual 1.3.3) or busy
+	if (VU0.VI[REG_VPU_STAT].UL & 0x7)
 	{
 		vif0.waitforvu = true;
 		vif0.vifstalled.enabled = VifStallEnable(vif0ch);
@@ -134,7 +135,7 @@ __fi void vif0VUFinish()
 		CpuVU0->ExecuteBlock();
 	}
 
-	if (VU0.VI[REG_VPU_STAT].UL & 0x5)
+	if (VU0.VI[REG_VPU_STAT].UL & 0x7)
 	{
 		CPU_INT(VIF_VU0_FINISH, 128);
 		CPU_SET_DMASTALL(VIF_VU0_FINISH, true);
