@@ -274,6 +274,7 @@ void InterpVU0::Execute(u32 cycles)
 		vu0Exec(&VU0);
 	}
 	VU0.VI[REG_TPC].UL >>= 3;
+	vuMirrorTpc(VU0);
 
 	if (EmuConfig.Speedhacks.EECycleRate != 0 && (!EmuConfig.Gamefixes.VUSyncHack || EmuConfig.Speedhacks.EECycleRate < 0))
 	{

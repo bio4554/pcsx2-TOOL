@@ -4,6 +4,7 @@
 #include "Common.h"
 #include "VUmicro.h"
 #include "MTVU.h"
+#include "ps2/Iop/Pif.h"
 
 alignas(16) VURegs vuRegs[2];
 
@@ -49,6 +50,13 @@ void vuMemReset()
 	VU1.VF[0].f.z = 0.0f;
 	VU1.VF[0].f.w = 1.0f;
 	VU1.VI[0].UL = 0;
+
+	// vi19 as the DTL-T10000 reads it: VU0's through cfc2, VU1's through VU0's window (docs/09 B5).
+	if (Pif::IsPresent())
+	{
+		VU0.VI[19].UL = 0x00002e13;
+		VU1.VI[19].UL = 0x00012e12;
+	}
 }
 
 bool SaveStateBase::vuMicroFreeze()

@@ -173,6 +173,15 @@ extern BaseVUmicroCPU* CpuVU1;
 // GIF and GS costs PCSX2 doesn't model, and is not a hardware clock ratio.
 extern u32 g_vu1ClockShift;
 
+// TOOL mode (set in Pif::Reset): vi30 reads as the VU's TPC, as on the DTL-T10000, through VU0's
+// cfc2 and VU0's window onto VU1's registers. Kept up to date where a VU run ends.
+extern bool g_vuMirrorTpc;
+__fi void vuMirrorTpc(VURegs& vu)
+{
+	if (g_vuMirrorTpc)
+		vu.VI[30].UL = vu.VI[REG_TPC].UL;
+}
+
 
 // VU0
 extern void vu0ResetRegs();

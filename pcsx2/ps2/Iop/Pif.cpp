@@ -302,6 +302,7 @@ namespace Pif
 		// each VU1 cycle cost 2 EE cycles; real VU1 runs at the EE clock, so 0 is accurate.
 		const char* shift = std::getenv("PCSX2_VU1_CLOCK_SHIFT");
 		g_vu1ClockShift = (IsPresent() && shift && std::atoi(shift)) ? 1 : 0;
+		g_vuMirrorTpc = IsPresent();
 
 		// The mVU flag hack leaves the VU status flag stale wherever the microprogram doesn't read it (a VU
 		// debugger's register view, EE-side reads): off in TOOL mode unless PCSX2_VU_FLAG_HACK=1.

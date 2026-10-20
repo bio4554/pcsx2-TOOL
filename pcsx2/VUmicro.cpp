@@ -10,6 +10,7 @@
 BaseVUmicroCPU* CpuVU0 = nullptr;
 BaseVUmicroCPU* CpuVU1 = nullptr;
 u32 g_vu1ClockShift = 0;
+bool g_vuMirrorTpc = false;
 
 __inline u32 CalculateMinRunCycles(u32 cycles, bool requiresAccurateCycles)
 {

@@ -360,6 +360,7 @@ void recMicroVU0::Execute(u32 cycles)
 
 	((mVUrecCall)microVU0.startFunct)(VU0.VI[REG_TPC].UL, cycles);
 	VU0.VI[REG_TPC].UL >>= 3;
+	vuMirrorTpc(VU0);
 	if (microVU0.regs().flags & 0x4)
 	{
 		microVU0.regs().flags &= ~0x4;
@@ -386,6 +387,7 @@ void recMicroVU1::Execute(u32 cycles)
 	VU1.VI[REG_TPC].UL <<= 3;
 	((mVUrecCall)microVU1.startFunct)(VU1.VI[REG_TPC].UL, cycles);
 	VU1.VI[REG_TPC].UL >>= 3;
+	vuMirrorTpc(VU1);
 	if (microVU1.regs().flags & 0x4 && !THREAD_VU1)
 	{
 		microVU1.regs().flags &= ~0x4;
