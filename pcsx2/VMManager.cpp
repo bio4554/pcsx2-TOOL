@@ -1696,7 +1696,7 @@ void VMManager::Shutdown(bool save_resume_state)
 		vu1Thread.WaitVU();
 	MTGS::WaitGS();
 
-	if (!GSDumpReplayer::IsReplayingDump() && save_resume_state)
+	if (!GSDumpReplayer::IsReplayingDump() && save_resume_state && !Pif::IsPresent()) // TOOL mode: no savestates
 	{
 		std::string resume_file_name(GetCurrentSaveStateFileName(-1));
 		if (!resume_file_name.empty())
@@ -1936,8 +1936,20 @@ std::string VMManager::GetCurrentSaveStateFileName(s32 slot, bool backup)
 	return GetSaveStateFileName(s_disc_serial.c_str(), s_disc_crc, slot, backup);
 }
 
+// TOOL mode: no savestates. A state holds neither the PIF bridge's state nor the host's side of the
+// DECI2 session (dsnetm, the debuggers), so a loaded one couldn't carry on with the host.
+static bool ToolModeRefusesSaveState(Error* error)
+{
+	if (!Pif::IsPresent())
+		return false;
+	Error::SetString(error, TRANSLATE_STR("VMManager", "Save states aren't available with a TOOL BIOS (DECI2 session state)."));
+	return true;
+}
+
 bool VMManager::DoLoadState(const char* filename, Error* error)
 {
+	if (ToolModeRefusesSaveState(error))
+		return false;
 	if (GSDumpReplayer::IsReplayingDump())
 	{
 		Error::SetString(error, TRANSLATE_STR("VMManager", "Cannot load state while replaying a GS dump."));
@@ -1962,6 +1974,11 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 
 void VMManager::DoSaveState(const char* filename, s32 slot_for_message, bool zip_on_thread, bool backup_old_state, std::function<void(const std::string&)> error_callback)
 {
+	if (Error tool_error; ToolModeRefusesSaveState(&tool_error))
+	{
+		error_callback(tool_error.GetDescription());
+		return;
+	}
 	if (GSDumpReplayer::IsReplayingDump())
 	{
 		error_callback(TRANSLATE_STR("VMManager", "Cannot save state while replaying a GS dump."));
@@ -2105,6 +2122,10 @@ bool VMManager::LoadState(const char* filename, Error* error)
 			TRANSLATE_STR("VMManager", "The memory card is busy, so the state load operation has been cancelled to prevent data loss."));
 		return false;
 	}
+
+	// Refused before anything is loaded, so there's nothing to reset.
+	if (ToolModeRefusesSaveState(error))
+		return false;
 
 	// TODO: Save the current state so we don't need to reset.
 	if (!DoLoadState(filename, error))
