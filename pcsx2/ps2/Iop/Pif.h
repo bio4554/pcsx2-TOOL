@@ -21,6 +21,9 @@ namespace Pif
 
 	// The card only exists when booting a TOOL ROM.
 	bool IsPresent();
+	// TOOL mode computes every VU status flag: the mVU flag hack (EmuCore/Speedhacks vuFlagHack) is ignored, so
+	// debuggers and EE-side reads see the real flags. PCSX2_VU_FLAG_HACK=1 keeps the hack. Set by Reset().
+	bool ExactVuFlags();
 	__fi bool Handles(u32 addr) { return addr >= BASE && addr < END && IsPresent(); }
 
 	void Reset();

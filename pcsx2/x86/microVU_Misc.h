@@ -330,7 +330,7 @@ static constexpr bool doWholeProgCompare = false;
 //------------------------------------------------------------------
 
 // Status Flag Speed Hack
-#define CHECK_VU_FLAGHACK (EmuConfig.Speedhacks.vuFlagHack)
+#define CHECK_VU_FLAGHACK (EmuConfig.Speedhacks.vuFlagHack && !Pif::ExactVuFlags())
 // This hack only updates the Status Flag on blocks that will read it.
 // Most blocks do not read status flags, so this is a big speedup.
 

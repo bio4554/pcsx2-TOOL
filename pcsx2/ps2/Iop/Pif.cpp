@@ -278,6 +278,13 @@ namespace Pif
 		return BiosZone == "T10K";
 	}
 
+	static bool s_exactVuFlags = false;
+
+	bool ExactVuFlags()
+	{
+		return s_exactVuFlags;
+	}
+
 	void Reset()
 	{
 		s_state = {};
@@ -295,6 +302,13 @@ namespace Pif
 		// each VU1 cycle cost 2 EE cycles; real VU1 runs at the EE clock, so 0 is accurate.
 		const char* shift = std::getenv("PCSX2_VU1_CLOCK_SHIFT");
 		g_vu1ClockShift = (IsPresent() && shift && std::atoi(shift)) ? 1 : 0;
+
+		// The mVU flag hack leaves the VU status flag stale wherever the microprogram doesn't read it (a VU
+		// debugger's register view, EE-side reads): off in TOOL mode unless PCSX2_VU_FLAG_HACK=1.
+		const char* flag_hack = std::getenv("PCSX2_VU_FLAG_HACK");
+		s_exactVuFlags = IsPresent() && !(flag_hack && std::atoi(flag_hack));
+		if (s_exactVuFlags && EmuConfig.Speedhacks.vuFlagHack)
+			Console.WriteLn("PIF: TOOL mode: the mVU flag hack is off (exact VU status flags; PCSX2_VU_FLAG_HACK=1 keeps it)");
 
 		if (IsPresent())
 		{

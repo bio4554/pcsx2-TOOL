@@ -12,6 +12,7 @@
 #include "R3000A.h"
 #include "R5900OpcodeTables.h"
 #include "VMManager.h"
+#include "ps2/Iop/Pif.h"
 #include "vtlb.h"
 #include "x86/BaseblockEx.h"
 #include "x86/iR5900.h"
@@ -2769,7 +2770,7 @@ StartRecomp:
 	{
 		COP2MicroFinishPass().Run(startpc, s_nEndBlock, s_pInstCache + 1);
 
-		if (EmuConfig.Speedhacks.vuFlagHack)
+		if (EmuConfig.Speedhacks.vuFlagHack && !Pif::ExactVuFlags())
 			COP2FlagHackPass().Run(startpc, s_nEndBlock, s_pInstCache + 1);
 	}
 
