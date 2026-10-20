@@ -906,6 +906,9 @@ namespace R3000A
 			{
 				const std::string s = Ra1;
 				iopConLog(ShiftJIS_ConvertString(s.data(), a2));
+				// With a TOOL ROM, stdout is the ROM's DECI2 TTY device (I0TTYP, dsicons): let the call through.
+				if (Pif::IsPresent())
+					return 0;
 				pc = ra;
 				v0 = a2;
 				return 1;
@@ -935,13 +938,17 @@ namespace R3000A
 	{
 		int Kprintf_HLE()
 		{
+			// With a TOOL ROM the real Kprintf runs too: it goes out through DECI2KPRT to dsicons.
+			// The console copy below stays (returning 0 lets the call through).
+			const int handled = Pif::IsPresent() ? 0 : 1;
 
 			// Emulate the expected Kprintf functionality:
 			iopMemWrite32(sp, a0);
 			iopMemWrite32(sp + 4, a1);
 			iopMemWrite32(sp + 8, a2);
 			iopMemWrite32(sp + 12, a3);
-			pc = ra;
+			if (handled)
+				pc = ra;
 
 			const std::string fmt = Ra0;
 
@@ -950,7 +957,7 @@ namespace R3000A
 			// console disabled.
 
 			if (!ConsoleLogging.iopConsole.IsActive())
-				return 1;
+				return handled;
 
 			// maximum allowed size for our buffer before we truncate
 			constexpr unsigned int max_len = 4096;
@@ -1066,7 +1073,7 @@ namespace R3000A
 			*ptmp = 0;
 			iopConLog(ShiftJIS_ConvertString(tmp, 1023));
 
-			return 1;
+			return handled;
 		}
 	} // namespace sysmem
 
