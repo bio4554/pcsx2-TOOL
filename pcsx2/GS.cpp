@@ -7,6 +7,7 @@
 #include "Gif_Unit.h"
 #include "MTGS.h"
 #include "VMManager.h"
+#include "ps2/Iop/Pif.h"
 
 #include <list>
 
@@ -41,6 +42,8 @@ static __fi void gsCSRwrite( const tGS_CSR& csr )
 		std::memset(g_RealGSMem, 0, sizeof(g_RealGSMem));
 		GSIMR.reset();
 		CSRreg.Reset();
+		if (Pif::IsPresent()) // the TOOL's GS revision (libgraph only records it, in sceGsGParam)
+			CSRreg.REV = 0x08;
 		MTGS::ResetGS(false);
 	}
 

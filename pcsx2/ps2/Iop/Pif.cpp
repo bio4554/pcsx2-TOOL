@@ -18,15 +18,15 @@
 
 namespace Pif
 {
-	// Board ID. 0x4127 selects the small (0x7f) FIFO thresholds in DECI2DRP;
-	// 0x4126 selects 0x3ff. Which one a real TOOL reports still needs checking.
-	static constexpr u16 BOARD_ID = 0x4127;
+	// Board ID. The DTL-T10000 checked reports 0x4126, which selects the 0x3ff FIFO thresholds in
+	// DECI2DRP (0x4127: 0x7f, and a different reset path). Until 2026-10-20 this answered 0x4127.
+	static constexpr u16 BOARD_ID = 0x4126;
 
 	// How often the IOP polls the bridge for host packets (about 110us).
 	static constexpr s32 POLL_CYCLES = 4096;
 
 	static constexpr u32 FIFO_WORDS = 4096;
-	static constexpr u32 FIFO_THRESHOLD = 0x7f;
+	static constexpr u32 FIFO_THRESHOLD = 0x3ff;
 
 	enum Reg : u32
 	{

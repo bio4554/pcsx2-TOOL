@@ -71,6 +71,11 @@ void cpuReset()
 	cpuRegs.CP0.n.PRid		= 0x00002e20; // PRevID = Revision ID, same as R5900
 	fpuRegs.fprc[0]			= 0x00002e30; // fpu Revision..
 	fpuRegs.fprc[31]		= 0x01000001; // fpu Status/Control
+	if (Pif::IsPresent()) // the TOOL's EE (the DTL-T10000 checked, 2003-10-31 ROM); nothing in the SDK keys on these
+	{
+		cpuRegs.CP0.n.PRid = 0x00002e14;
+		fpuRegs.fprc[0] = 0x00002e12;
+	}
 
 	cpuRegs.nextEventCycle = cpuRegs.cycle + 4;
 	EEsCycle = 0;
