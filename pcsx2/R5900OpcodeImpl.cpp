@@ -29,7 +29,8 @@ static __fi bool _add64_Overflow( s64 x, s64 y, s64 &ret )
 	// other method below is like 5-10 times slower).
 
 	if( ((~(x^y))&(x^result)) < 0 ) {
-		cpuException(0x30, cpuRegs.branch);		// fixme: is 0x30 right for overflow??
+		cpuRegs.pc -= 4; // EPC is the add itself (TOOL)
+		cpuException(EXC_CODE_Ov, cpuRegs.branch);
 		return true;
 	}
 
@@ -52,7 +53,8 @@ static __fi bool _add32_Overflow( s32 x, s32 y, s64 &ret )
 
 	// If bit32 != bit31 then we have an overflow.
 	if( (result.UL[0]>>31) != (result.UL[1] & 1) ) {
-		cpuException(0x30, cpuRegs.branch);
+		cpuRegs.pc -= 4; // EPC is the add itself (TOOL)
+		cpuException(EXC_CODE_Ov, cpuRegs.branch);
 		return true;
 	}
 
@@ -259,13 +261,17 @@ void COP2()
 	Int_COP2PrintTable[_Rs_]();
 }
 
+// The faults mode raises RI for all of these, as the TOOL does for every encoding tried (faulttest: ll, sc,
+// lwc2, ldc1, the unused SPECIAL, REGIMM and MMI functions, dmfc0, add.d, round.l.s).
 void Unknown() {
+	if (g_eeFaults)
+		return cpuReservedInstruction();
 	CPU_LOG("%8.8lx: Unknown opcode called", cpuRegs.pc);
 }
 
-void MMI_Unknown() { Console.Warning("Unknown MMI opcode called"); }
-void COP0_Unknown() { Console.Warning("Unknown COP0 opcode called"); }
-void COP1_Unknown() { Console.Warning("Unknown FPU/COP1 opcode called"); }
+void MMI_Unknown() { if (g_eeFaults) return cpuReservedInstruction(); Console.Warning("Unknown MMI opcode called"); }
+void COP0_Unknown() { if (g_eeFaults) return cpuReservedInstruction(); Console.Warning("Unknown COP0 opcode called"); }
+void COP1_Unknown() { if (g_eeFaults) return cpuReservedInstruction(); Console.Warning("Unknown FPU/COP1 opcode called"); }
 
 
 
@@ -510,6 +516,9 @@ void DSRLV(){ if (!_Rd_) return; cpuRegs.GPR.r[_Rd_].UD[0] = (u64)(cpuRegs.GPR.r
 
 __noinline static void RaiseAddressError(u32 addr, bool store)
 {
+	if (g_eeFaults)
+		cpuAddressError(addr, store); // doesn't return
+
 	const std::string message(fmt::format("Address Error, addr=0x{:x} [{}]", addr, store ? "store" : "load"));
 
 	// TODO: This doesn't actually get raised in the CPU yet.
@@ -518,9 +527,32 @@ __noinline static void RaiseAddressError(u32 addr, bool store)
 	Cpu->CancelInstruction();
 }
 
+// Faults mode: an access to a segment the current mode can't use is an address error.
+static __fi void CheckSegment(u32 addr, bool store)
+{
+	if (g_eeFaults && !cpuAddressAllowed(addr)) [[unlikely]]
+		cpuAddressError(addr, store);
+}
+
+// Faults mode: LWL and the rest, LQ and SQ, around their access of the aligned word (see EeFaultAccess).
+static __fi void BeginMaskedAccess(u32 addr, bool store)
+{
+	if (g_eeFaults) [[unlikely]]
+	{
+		CheckSegment(addr, store);
+		g_eeFaultAccess = {true, store, addr};
+	}
+}
+
+static __fi void EndMaskedAccess()
+{
+	g_eeFaultAccess.active = false;
+}
+
 void LB()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	CheckSegment(addr, false);
 	s8 temp = memRead8(addr);
 
 	if (!_Rt_) return;
@@ -537,6 +569,7 @@ void LB()
 void LBU()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	CheckSegment(addr, false);
 	u8 temp = memRead8(addr);
 
 	if (!_Rt_) return;
@@ -556,6 +589,7 @@ void LH()
 
 	if (addr & 1) [[unlikely]]
 		RaiseAddressError(addr, false);
+	CheckSegment(addr, false);
 
 	s16 temp = memRead16(addr);
 
@@ -576,6 +610,7 @@ void LHU()
 
 	if (addr & 1) [[unlikely]]
 		RaiseAddressError(addr, false);
+	CheckSegment(addr, false);
 
 	u16 temp = memRead16(addr);
 
@@ -596,6 +631,7 @@ void LW()
 
 	if (addr & 3) [[unlikely]]
 		RaiseAddressError(addr, false);
+	CheckSegment(addr, false);
 
 	u32 temp = memRead32(addr);
 
@@ -616,6 +652,7 @@ void LWU()
 
 	if (addr & 3) [[unlikely]]
 		RaiseAddressError(addr, false);
+	CheckSegment(addr, false);
 
 	u32 temp = memRead32(addr);
 
@@ -633,7 +670,9 @@ void LWL()
 	s32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 3;
 
+	BeginMaskedAccess(addr, false);
 	u32 mem = memRead32(addr & ~3);
+	EndMaskedAccess();
 
 	if (!_Rt_) return;
 
@@ -657,7 +696,9 @@ void LWR()
 	s32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 3;
 
+	BeginMaskedAccess(addr, false);
 	u32 mem = memRead32(addr & ~3);
+	EndMaskedAccess();
 
 	if (!_Rt_) return;
 
@@ -704,6 +745,7 @@ void LD()
 
 	if (addr & 7) [[unlikely]]
 		RaiseAddressError(addr, false);
+	CheckSegment(addr, false);
 
 	if (!_Rt_) return;
 
@@ -728,7 +770,9 @@ void LDL()
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 7;
 
+	BeginMaskedAccess(addr, false);
 	u64 mem = memRead64(addr & ~7);
+	EndMaskedAccess();
 
 	if( !_Rt_ ) return;
 	cpuRegs.GPR.r[_Rt_].UD[0] =	(cpuRegs.GPR.r[_Rt_].UD[0] & LDL_MASK[shift]) |
@@ -740,7 +784,9 @@ void LDR()
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 7;
 
+	BeginMaskedAccess(addr, false);
 	u64 mem = memRead64(addr & ~7);
+	EndMaskedAccess();
 
 	if (!_Rt_) return;
 	cpuRegs.GPR.r[_Rt_].UD[0] =	(cpuRegs.GPR.r[_Rt_].UD[0] & LDR_MASK[shift]) |
@@ -753,12 +799,15 @@ void LQ()
 	// an address error due to unaligned access isn't possible like it is on other loads/stores.
 
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	BeginMaskedAccess(addr, false);
 	memRead128(addr & ~0xf, (u128*)gpr_GetWritePtr(_Rt_));
+	EndMaskedAccess();
 }
 
 void SB()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	CheckSegment(addr, true);
 	memWrite8(addr, cpuRegs.GPR.r[_Rt_].UC[0]);
 }
 
@@ -768,6 +817,7 @@ void SH()
 
 	if (addr & 1) [[unlikely]]
 		RaiseAddressError(addr, true);
+	CheckSegment(addr, true);
 
 	memWrite16(addr, cpuRegs.GPR.r[_Rt_].US[0]);
 }
@@ -778,6 +828,7 @@ void SW()
 
 	if (addr & 3) [[unlikely]]
 		RaiseAddressError(addr, true);
+	CheckSegment(addr, true);
 
   memWrite32(addr, cpuRegs.GPR.r[_Rt_].UL[0]);
 }
@@ -792,12 +843,14 @@ void SWL()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 3;
+	BeginMaskedAccess(addr, true);
 	u32 mem = memRead32( addr & ~3 );
 
 	memWrite32( addr & ~3,
 		(cpuRegs.GPR.r[_Rt_].UL[0] >> SWL_SHIFT[shift]) |
 		(mem & SWL_MASK[shift])
 	);
+	EndMaskedAccess();
 
 	/*
 	Mem = 1234.  Reg = abcd
@@ -812,12 +865,14 @@ void SWL()
 void SWR() {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 3;
+	BeginMaskedAccess(addr, true);
 	u32 mem = memRead32(addr & ~3);
 
 	memWrite32( addr & ~3,
 		(cpuRegs.GPR.r[_Rt_].UL[0] << SWR_SHIFT[shift]) |
 		(mem & SWR_MASK[shift])
 	);
+	EndMaskedAccess();
 
 	/*
 	Mem = 1234.  Reg = abcd
@@ -835,6 +890,7 @@ void SD()
 
 	if (addr & 7) [[unlikely]]
 		RaiseAddressError(addr, true);
+	CheckSegment(addr, true);
 
     memWrite64(addr,cpuRegs.GPR.r[_Rt_].UD[0]);
 }
@@ -855,10 +911,12 @@ void SDL()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 7;
+	BeginMaskedAccess(addr, true);
 	u64 mem = memRead64(addr & ~7);
 	mem = (cpuRegs.GPR.r[_Rt_].UD[0] >> SDL_SHIFT[shift]) |
 		  (mem & SDL_MASK[shift]);
 	memWrite64(addr & ~7, mem);
+	EndMaskedAccess();
 }
 
 
@@ -866,10 +924,12 @@ void SDR()
 {
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
 	u32 shift = addr & 7;
+	BeginMaskedAccess(addr, true);
 	u64 mem = memRead64(addr & ~7);
 	mem = (cpuRegs.GPR.r[_Rt_].UD[0] << SDR_SHIFT[shift]) |
 		  (mem & SDR_MASK[shift]);
 	memWrite64(addr & ~7, mem );
+	EndMaskedAccess();
 }
 
 void SQ()
@@ -878,7 +938,9 @@ void SQ()
 	// an address error due to unaligned access isn't possible like it is on other loads/stores.
 
 	u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + _Imm_;
+	BeginMaskedAccess(addr, true);
 	memWrite128(addr & ~0xf, cpuRegs.GPR.r[_Rt_].UQ);
+	EndMaskedAccess();
 }
 
 /*********************************************************

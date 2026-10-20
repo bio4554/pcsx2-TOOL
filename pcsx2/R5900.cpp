@@ -76,6 +76,8 @@ void cpuReset()
 		cpuRegs.CP0.n.PRid = 0x00002e14;
 		fpuRegs.fprc[0] = 0x00002e12;
 	}
+	if (g_eeFaults)
+		Console.WriteLn("EE faults mode (PCSX2_EE_FAULTS=1): the interpreter, with address errors, overflow and reserved instructions");
 
 	cpuRegs.nextEventCycle = cpuRegs.cycle + 4;
 	EEsCycle = 0;
@@ -341,8 +343,54 @@ bool cpuDataBreakpointSkidTick(bool bd)
 	return true;
 }
 
+bool g_eeFaults = false;
+EeFaultAccess g_eeFaultAccess = {};
+
+void cpuAddressError(u32 addr, bool store)
+{
+	cpuRegs.CP0.n.BadVAddr = addr;
+	cpuRegs.pc -= 4;
+	cpuException(store ? EXC_CODE_AdES : EXC_CODE_AdEL, cpuRegs.branch);
+	Cpu->CancelInstruction();
+}
+
+bool cpuFetchException(bool tlb)
+{
+	const u32 pc = cpuRegs.pc;
+	u32 code;
+	if ((pc & 3) || !cpuAddressAllowed(pc))
+		code = EXC_CODE_AdEL;
+	else if (tlb && vtlb_IsUnmappedVirtual(pc))
+		code = EXC_CODE_TLBL;
+	else
+		return false;
+
+	cpuRegs.CP0.n.BadVAddr = pc;
+	if (code == EXC_CODE_TLBL)
+	{
+		cpuRegs.CP0.n.Context = (cpuRegs.CP0.n.Context & 0xFF80000F) | ((pc >> 9) & 0x007FFFF0);
+		cpuRegs.CP0.n.EntryHi = (pc & 0xFFFFE000) | (cpuRegs.CP0.n.EntryHi & 0x1FFF);
+	}
+	cpuException(code, cpuRegs.branch);
+	return true;
+}
+
+void cpuReservedInstruction()
+{
+	cpuRegs.pc -= 4;
+	cpuException(EXC_CODE_Ri, cpuRegs.branch);
+}
+
 void cpuTlbMiss(u32 addr, u32 bd, u32 excode)
 {
+	if (g_eeFaultAccess.active)
+	{
+		addr = g_eeFaultAccess.addr;
+		if (g_eeFaultAccess.store)
+			excode = EXC_CODE_TLBS;
+		g_eeFaultAccess.active = false;
+	}
+
 	// Avoid too much spamming on the interpreter
 	if (Cpu != &intCpu || IsDebugBuild) {
 		Console.Error("cpuTlbMiss pc:%x, cycl:%llx, addr: %x, status=%x, code=%x",

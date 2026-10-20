@@ -323,6 +323,12 @@ template void vtlb_memWrite<mem16_t>(u32 mem, mem16_t data);
 template void vtlb_memWrite<mem32_t>(u32 mem, mem32_t data);
 template void vtlb_memWrite<mem64_t>(u32 mem, mem64_t data);
 
+bool vtlb_IsUnmappedVirtual(u32 vaddr)
+{
+	const auto vmv = vtlbdata.vmap[vaddr >> VTLB_PAGE_BITS];
+	return vmv.isHandler(vaddr) && vmv.assumeHandlerGetID() == UnmappedVirtHandler;
+}
+
 template <typename DataType>
 DataType vtlb_ramRead(u32 addr, bool* result)
 {

@@ -155,6 +155,11 @@ void intCheckMemcheck()
 
 static void execI()
 {
+	// Faults mode: the fetch's exception, before anything reads the instruction (the debugger checks below
+	// do, with pc not yet advanced, which would put a TLB miss's EPC 4 bytes early).
+	if (g_eeFaults && cpuFetchException(true)) [[unlikely]]
+		return;
+
 	// execI is called for every instruction so it must remains as light as possible.
 	// If you enable the next define, Interpreter will be much slower (around
 	// ~4fps on 3.9GHz Haswell vs ~8fps (even 10fps on dev build))

@@ -431,6 +431,42 @@ extern bool cpuDataBreakpointSkidTick(bool bd);
 extern void cpuDisarmDataBreakpoint();
 extern void cpuTlbMissR(u32 addr, u32 bd);
 extern void cpuTlbMissW(u32 addr, u32 bd);
+
+// The faults mode (PCSX2_EE_FAULTS=1): the EE runs on the interpreter and raises the faults the
+// TOOL's EE raises, checked against it with ps2-research's faulttest: address errors (misaligned accesses,
+// kernel segments from user or supervisor mode, bad instruction fetches), overflow and reserved
+// instructions, with BadVAddr, EPC and Cause.BD as there. Set when the settings load.
+extern bool g_eeFaults;
+
+// Whether the current mode may use addr: user mode only kuseg, supervisor mode kuseg and sseg
+// (0xc0000000-0xdfffffff), kernel mode (or EXL/ERL) all of it. Supervisor mode needs proper testing: nothing
+// known runs in it.
+static __fi bool cpuAddressAllowed(u32 addr)
+{
+	if (!(addr & 0x80000000))
+		return true;
+	const auto& st = cpuRegs.CP0.n.Status.b;
+	if (st.EXL || st.ERL || st.KSU == 0)
+		return true;
+	return st.KSU == 1 && (addr >> 29) == 6;
+}
+
+// AdEL/AdES for the instruction being interpreted (cpuRegs.pc already past it); cancels it.
+extern void cpuAddressError(u32 addr, bool store);
+// The exception a fetch from cpuRegs.pc takes, if any: AdEL for a misaligned pc or a segment the mode can't
+// use, and with tlb set, TLBL for an address with no TLB mapping. Returns false when there is none.
+extern bool cpuFetchException(bool tlb);
+// RI for the instruction being interpreted.
+extern void cpuReservedInstruction();
+// LWL and the rest access the aligned word (LQ and SQ the aligned quadword), but a TLB miss reports the
+// instruction's own address, and SWL's read misses as a store (TOOL). Faults mode: the access in progress.
+struct EeFaultAccess
+{
+	bool active;
+	bool store;
+	u32 addr;
+};
+extern EeFaultAccess g_eeFaultAccess;
 extern void cpuTestHwInts();
 extern void cpuClearInt(uint n);
 extern void GoemonPreloadTlb();

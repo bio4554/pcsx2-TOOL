@@ -80,6 +80,8 @@ extern void vtlb_ClearLoadStoreInfo();
 extern void vtlb_AddLoadStoreInfo(uptr code_address, u32 code_size, u32 guest_pc, u32 gpr_bitmask, u32 fpr_bitmask, u8 address_register, u8 data_register, u8 size_in_bits, bool is_signed, bool is_load, bool is_fpr);
 extern void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc, u32 guest_addr, u32 gpr_bitmask, u32 fpr_bitmask, u8 address_register, u8 data_register, u8 size_in_bits, bool is_signed, bool is_load, bool is_fpr);
 extern bool vtlb_IsFaultingPC(u32 guest_pc);
+// Whether vaddr has no TLB mapping, so that the EE takes a TLB miss on it.
+extern bool vtlb_IsUnmappedVirtual(u32 vaddr);
 
 //Memory functions
 

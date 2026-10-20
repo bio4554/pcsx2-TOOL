@@ -234,12 +234,12 @@ void C_LT() {
 void CFC1() {
 	if (!_Rt_) return;
 
-	if (_Fs_ == 31)
-		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)fpuRegs.fprc[31];	// force sign extension to 64 bit
-	else if (_Fs_ == 0)
-		cpuRegs.GPR.r[_Rt_].SD[0] = 0x2E00;
+	// As recCFC1 reads them, which is what the TOOL's EE gives (FCR31 0x01000001 after the kernel writes 0):
+	// FCR31 with its always-zero bits clear and its always-one bits set, FCR0 from fprc[0].
+	if (_Fs_ >= 16)
+		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)((fpuRegs.fprc[31] & 0x0083c078) | 0x01000001); // force sign extension to 64 bit
 	else
-		cpuRegs.GPR.r[_Rt_].SD[0] = 0;
+		cpuRegs.GPR.r[_Rt_].SD[0] = (s32)fpuRegs.fprc[0];
 }
 
 void CTC1() {
@@ -391,6 +391,8 @@ void SUBA_S() {
 void LWC1() {
 	u32 addr;
 	addr = cpuRegs.GPR.r[_Rs_].UL[0] + (s16)(cpuRegs.code & 0xffff);	// force sign extension to 32bit
+	if (g_eeFaults && ((addr & 3) || !cpuAddressAllowed(addr))) [[unlikely]]
+		cpuAddressError(addr, false);
 	if (addr & 0x00000003) { Console.Error( "FPU (LWC1 Opcode): Invalid Unaligned Memory Address" ); return; }  // Should signal an exception?
 	fpuRegs.fpr[_Rt_].UL = memRead32(addr);
 }
@@ -398,6 +400,8 @@ void LWC1() {
 void SWC1() {
 	u32 addr;
 	addr = cpuRegs.GPR.r[_Rs_].UL[0] + (s16)(cpuRegs.code & 0xffff);	// force sign extension to 32bit
+	if (g_eeFaults && ((addr & 3) || !cpuAddressAllowed(addr))) [[unlikely]]
+		cpuAddressError(addr, true);
 	if (addr & 0x00000003) { Console.Error( "FPU (SWC1 Opcode): Invalid Unaligned Memory Address" ); return; }  // Should signal an exception?
 	memWrite32(addr, fpuRegs.fpr[_Rt_].UL);
 }

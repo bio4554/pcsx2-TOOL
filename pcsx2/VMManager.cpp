@@ -663,6 +663,12 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	// Achievements hardcore mode disallows setting some configuration options.
 	EnforceAchievementsChallengeModeSettings();
 
+	// The EE faults mode (R5900.h) runs on the interpreter: a per-run choice of the environment, not a setting.
+	const char* faults = std::getenv("PCSX2_EE_FAULTS");
+	g_eeFaults = faults && faults[0] == '1';
+	if (g_eeFaults)
+		EmuConfig.Cpu.Recompiler.EnableEE = false;
+
 	// Remove any user-specified hacks in the config (we don't want stale/conflicting values when it's globally disabled).
 	EmuConfig.GS.MaskUserHacks();
 	EmuConfig.GS.MaskUpscalingHacks();

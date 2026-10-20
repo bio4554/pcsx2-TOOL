@@ -388,6 +388,7 @@ static void recRecompile(const u32 startpc);
 static void dyna_block_discard(u32 start, u32 sz);
 static void dyna_page_reset(u32 start, u32 sz);
 static void recError(u32 error);
+static void recFetchError(u32 error);
 
 static const void* DispatcherEvent = nullptr;
 static const void* DispatcherReg = nullptr;
@@ -510,7 +511,8 @@ static const void* _DynGen_DispatchPageReset()
 static const void* _DynGen_UnmappedRecLUTPage()
 {
 	u8* retval = xGetPtr();
-	xFastCall((const void*)recError, 0);
+	xFastCall((const void*)recFetchError, 0);
+	xJMP(DispatcherReg); // to the exception vector, when recFetchError took an exception
 	return retval;
 }
 
@@ -552,6 +554,24 @@ static void recError(u32 error)
 
 	VMManager::SetPaused(true);
 	recExitExecution();
+}
+
+// TOOL mode: a jump the recompiler can't follow takes the fetch exception the EE takes instead
+// of pausing the VM: TLBL for a target with no TLB mapping, AdEL for a misaligned one (TOOL faulttest). Other
+// unmapped pages, and everything outside TOOL mode, still pause. Registers are flushed at both callers.
+static void recFetchError(u32 error)
+{
+	cpuRegs.branch = 0; // a jump target is never a delay slot
+	const u32 pc = cpuRegs.pc;
+	if (Pif::IsPresent() && cpuFetchException(true))
+	{
+		static int s_reported = 0;
+		if (s_reported++ < 20)
+			Console.Warning("R5900: jump to 0x%08x: %s exception", pc,
+				((cpuRegs.CP0.n.Cause >> 2) & 0x1f) == 2 ? "TLBL" : "AdEL");
+		return;
+	}
+	recError(error);
 }
 
 static __ri void ClearRecLUT(BASEBLOCK* base, int memsize)
@@ -917,17 +937,19 @@ void SetBranchReg()
 	g_branch = 1;
 
 	xMOV(ptr32[&cpuRegs.pc], eax);
+	iFlushCall(FLUSH_EVERYTHING);
 
 	// Test for jump to unaligned, only needed for register branches
-	//  since unaligned targets can't be encoded with imm
-	xTEST(eax, 3);
+	//  since unaligned targets can't be encoded with imm. After the flush, so that the exception
+	//  recFetchError takes sees the registers.
+	xTEST(ptr32[&cpuRegs.pc], 3);
 	xForwardJNZ32 unaligned;
 
-	iFlushCall(FLUSH_EVERYTHING);
 	iBranchTest();
 
 	unaligned.SetTarget();
-	xFastCall((const void*)recError, 1);
+	xFastCall((const void*)recFetchError, 1);
+	xJMP(DispatcherReg);
 }
 
 void SetBranchImm(u32 imm)

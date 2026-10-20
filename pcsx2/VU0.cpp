@@ -94,6 +94,9 @@ namespace OpcodeImpl
 	void LQC2() {
 		vu0Sync();
 		u32 addr = cpuRegs.GPR.r[_Rs_].UL[0] + (s16)cpuRegs.code;
+		// Faults mode: unlike LQ, LQC2 and SQC2 need an aligned address (TOOL).
+		if (g_eeFaults && ((addr & 15) || !cpuAddressAllowed(addr))) [[unlikely]]
+			cpuAddressError(addr, false);
 		if (_Ft_) {
 			memRead128(addr, VU0.VF[_Ft_].UQ);
 		} else {
@@ -108,6 +111,8 @@ namespace OpcodeImpl
 	void SQC2() {
 		vu0Sync();
 		u32 addr = _Imm_ + cpuRegs.GPR.r[_Rs_].UL[0];
+		if (g_eeFaults && ((addr & 15) || !cpuAddressAllowed(addr))) [[unlikely]]
+			cpuAddressError(addr, true);
 		memWrite128(addr, VU0.VF[_Ft_].UQ);
 	}
 }}}
