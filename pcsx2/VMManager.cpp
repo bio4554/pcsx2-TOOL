@@ -742,7 +742,11 @@ void VMManager::ApplyGameFixes()
 	if (!HasBootedELF() && !GSDumpReplayer::IsReplayingDump())
 	{
 		// Instant DMA needs to be on for this BIOS (font rendering is broken without it, possible cache issues).
-		EmuConfig.Gamefixes.InstantDMAHack = true;
+		// Not in TOOL mode: programs arrive over the debug link, never as a booted ELF, so this would run every
+		// program's DMA instantly. It also loops forever on a GIF DMA started while PATH3 is masked: the
+		// event test keeps firing the rescheduled GIF event without advancing the EE (needs proper testing).
+		if (!Pif::IsPresent())
+			EmuConfig.Gamefixes.InstantDMAHack = true;
 
 		// Disable user's manual hardware fixes, it might be problematic.
 		EmuConfig.GS.ManualUserHacks = false;
