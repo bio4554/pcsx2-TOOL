@@ -316,6 +316,16 @@ namespace Pif
 		if (s_exactVuFlags && EmuConfig.Speedhacks.vuFlagHack)
 			Console.WriteLn("PIF: TOOL mode: the mVU flag hack is off (exact VU status flags; PCSX2_VU_FLAG_HACK=1 keeps it)");
 
+		// The VU has no infinities or NaNs: an exponent of 255 is just a big number. The recompilers' default
+		// clamping lets x86 make an infinity or a NaN of one, which can flip a later sign or flag and with it a
+		// branch (crusade TR-22: a clipper gathering stale integers drew a polygon the TOOL rejects). So TOOL mode
+		// clamps as fully as PCSX2 can (Config.h, CHECK_VU_*OVERFLOW); PCSX2_VU_CLAMP=ini keeps the INI's
+		// clamping. Costs some VU speed. Needs proper testing beyond the cases it was checked on.
+		const char* vu_clamp = std::getenv("PCSX2_VU_CLAMP");
+		g_vuToolClamp = IsPresent() && !(vu_clamp && std::strcmp(vu_clamp, "ini") == 0);
+		if (g_vuToolClamp)
+			Console.WriteLn("PIF: TOOL mode: VU clamping is Extra + Preserve Sign on both VUs (PCSX2_VU_CLAMP=ini keeps the INI's)");
+
 		if (IsPresent())
 		{
 			Bridge::Start();

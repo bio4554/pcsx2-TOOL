@@ -1527,9 +1527,13 @@ namespace EmuFolders
 #define CHECK_FULLVU0SYNCHACK (EmuConfig.Gamefixes.FullVU0SyncHack)
 
 //------------ Advanced Options!!! ---------------
-#define CHECK_VU_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0Overflow : EmuConfig.Cpu.Recompiler.vu1Overflow)
-#define CHECK_VU_EXTRA_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0ExtraOverflow : EmuConfig.Cpu.Recompiler.vu1ExtraOverflow) // If enabled, Operands are clamped before being used in the VU recs
-#define CHECK_VU_SIGN_OVERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0SignOverflow : EmuConfig.Cpu.Recompiler.vu1SignOverflow)
+// TOOL mode (ps2/Iop/Pif.cpp) clamps VU floats as fully as PCSX2 can ("Extra + Preserve Sign") on both VUs,
+// whatever the INI says: the VU has no infinities or NaNs, so the clamping is what keeps a recompiled
+// program's results (and its branches on flags) the TOOL's. PCSX2_VU_CLAMP=ini keeps the INI's. Set by Pif::Reset().
+extern bool g_vuToolClamp;
+#define CHECK_VU_OVERFLOW(vunum) (g_vuToolClamp || (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0Overflow : EmuConfig.Cpu.Recompiler.vu1Overflow))
+#define CHECK_VU_EXTRA_OVERFLOW(vunum) (g_vuToolClamp || (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0ExtraOverflow : EmuConfig.Cpu.Recompiler.vu1ExtraOverflow)) // If enabled, Operands are clamped before being used in the VU recs
+#define CHECK_VU_SIGN_OVERFLOW(vunum) (g_vuToolClamp || (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0SignOverflow : EmuConfig.Cpu.Recompiler.vu1SignOverflow))
 #define CHECK_VU_UNDERFLOW(vunum) (((vunum) == 0) ? EmuConfig.Cpu.Recompiler.vu0Underflow : EmuConfig.Cpu.Recompiler.vu1Underflow)
 
 #define CHECK_FPU_OVERFLOW (EmuConfig.Cpu.Recompiler.fpuOverflow)
