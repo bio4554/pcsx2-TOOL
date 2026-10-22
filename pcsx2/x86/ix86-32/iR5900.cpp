@@ -571,6 +571,17 @@ static void recFetchError(u32 error)
 				((cpuRegs.CP0.n.Cause >> 2) & 0x1f) == 2 ? "TLBL" : "AdEL");
 		return;
 	}
+	// TOOL mode: a mapped page with no code to run (the scratchpad, I/O space) takes an instruction bus error,
+	// as in recRecompile, rather than pausing the VM: a program's stale handler mustn't stop the emulator
+	// (crusade TR-24). Needs proper testing on the TOOL.
+	if (Pif::IsPresent())
+	{
+		static int s_reported = 0;
+		if (s_reported++ < 20)
+			Console.Warning("R5900: jump to 0x%08x, where there is no code: bus error", pc);
+		cpuException(EXC_CODE_IBE, 0);
+		return;
+	}
 	recError(error);
 }
 
@@ -2401,7 +2412,22 @@ static void recRecompile(const u32 startpc)
 	u32 i = 0;
 	u32 willbranch3 = 0;
 
-	pxAssert(startpc);
+	// TOOL mode: address 0 is mapped RAM, and a program's stale handler can jump there (the DTL-T10000 runs
+	// whatever is there too); it mustn't end the emulator.
+	pxAssert(startpc || Pif::IsPresent());
+
+	// TOOL mode: a fetch where no memory answers (I/O space) takes an instruction bus error instead of
+	// crashing on PSM's null. The dispatcher goes on at the exception vector. Needs proper testing on the
+	// TOOL: it may fetch the registers' values instead.
+	if (Pif::IsPresent() && !PSM(startpc))
+	{
+		static int s_reported = 0;
+		if (s_reported++ < 20)
+			Console.Warning("R5900: fetch from 0x%08x, where no memory is: bus error", startpc);
+		cpuRegs.branch = 0; // a jump target is never a delay slot
+		cpuException(EXC_CODE_IBE, 0);
+		return;
+	}
 
 	// if recPtr reached the mem limit reset whole mem
 	if (recPtr >= recPtrEnd)
