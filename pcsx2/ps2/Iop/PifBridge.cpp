@@ -11,12 +11,16 @@
 #include "IopHw.h"
 #include "IopMem.h"
 #include "ps2/Iop/Pif.h"
+#include "ps2/Iop/PifDsnetm.h"
 #include "common/Threading.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -31,9 +35,11 @@ static constexpr socket_t BAD_SOCKET = INVALID_SOCKET;
 #define SHUT_BOTH_DIRS SD_BOTH
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 using socket_t = int;
@@ -52,6 +58,11 @@ static constexpr socket_t BAD_SOCKET = -1;
 // EPIPE: dsnetm drops the link (recv_target with no packet: NETMP RESETR to its
 // clients), and its idle loop reconnects (connect_dev), which sends the DCMP
 // connects DECI2HSYN waits for. Closing the TCP link gets the same from dsnetm.
+//
+// In dsnetm mode the bridge is dsnetm itself (PifDsnetm.cpp): it listens for the
+// clients (dekko, dsedb, ProDG's Target Manager), as the TOOL does on 8510, and
+// handles resets and reboots directly. Its thread runs the sockets and the
+// routing; the CPU thread hands it the target's packets and boots.
 namespace Pif::Bridge
 {
 	static constexpr u16 PROTO_NETMP = 0x0400;
@@ -61,6 +72,8 @@ namespace Pif::Bridge
 
 	static bool s_enabled;
 	static bool s_listenMode;
+	// The built-in dsnetm instead of a link to an external one.
+	static bool s_dsnetmMode;
 	static std::string s_hostName;
 	static u16 s_port;
 
@@ -93,6 +106,7 @@ namespace Pif::Bridge
 
 		std::string cfg(env);
 		s_listenMode = true;
+		s_dsnetmMode = false;
 		s_hostName = "127.0.0.1";
 		if (cfg.rfind("connect:", 0) == 0)
 		{
@@ -101,6 +115,11 @@ namespace Pif::Bridge
 		}
 		else if (cfg.rfind("listen:", 0) == 0)
 		{
+			cfg = cfg.substr(7);
+		}
+		else if (cfg.rfind("dsnetm:", 0) == 0)
+		{
+			s_dsnetmMode = true;
 			cfg = cfg.substr(7);
 		}
 
@@ -170,6 +189,33 @@ namespace Pif::Bridge
 		return sock;
 	}
 
+	static void ClearInbound()
+	{
+		std::lock_guard lock(s_inMutex);
+		s_inbound.clear();
+		s_inboundPending.store(false, std::memory_order_release);
+	}
+
+	static void QueueToTarget(std::vector<u8> pkt)
+	{
+		std::lock_guard lock(s_inMutex);
+		s_inbound.push_back(std::move(pkt));
+		s_inboundPending.store(true, std::memory_order_release);
+	}
+
+	// NETMP reset: reset the VM, holding host packets until it has.
+	static void ResetTarget()
+	{
+		Console.WriteLn("PIF: NETMP reset from the host, resetting the VM");
+		ClearInbound();
+		s_hold.store(true, std::memory_order_release);
+		s_resetReplyOwed.store(true, std::memory_order_release);
+		Host::RunOnCPUThread([]() {
+			if (VMManager::HasValidVM())
+				VMManager::Reset();
+		});
+	}
+
 	// Bridge thread: one DECI2 packet from the host.
 	static void HandleHostPacket(std::vector<u8> pkt)
 	{
@@ -178,24 +224,371 @@ namespace Pif::Bridge
 		{
 			// The boot parameters in the body are dsnetm's business: it puts them
 			// in the DCMP connects that follow.
-			Console.WriteLn("PIF: NETMP reset from the host, resetting the VM");
-			{
-				std::lock_guard lock(s_inMutex);
-				s_inbound.clear();
-				s_inboundPending.store(false, std::memory_order_release);
-			}
-			s_hold.store(true, std::memory_order_release);
-			s_resetReplyOwed.store(true, std::memory_order_release);
-			Host::RunOnCPUThread([]() {
-				if (VMManager::HasValidVM())
-					VMManager::Reset();
-			});
+			ResetTarget();
 			return;
 		}
+		QueueToTarget(std::move(pkt));
+	}
 
-		std::lock_guard lock(s_inMutex);
-		s_inbound.push_back(std::move(pkt));
-		s_inboundPending.store(true, std::memory_order_release);
+	// ---- dsnetm mode ----
+
+	// A dsnetm client: its socket, the bytes of a packet still arriving, and the
+	// packets waiting to go out. dsnetm doesn't limit that queue, except for TTY
+	// output (TTY_MAX_SIZE).
+	struct DsnetmClient
+	{
+		int id;
+		socket_t sock;
+		std::vector<u8> rx;
+		std::deque<std::vector<u8>> queue;
+		std::vector<u8> sending;
+		size_t sent = 0;
+		size_t ttyBytes = 0;
+		bool closed = false;
+	};
+
+	// dsnetm's tty_max_size option (default 8 MB): a client with more TTY output
+	// queued than this loses its whole queue, replaced by a note.
+	static constexpr size_t TTY_MAX_SIZE = 0x800000;
+
+	// Manager thread only.
+	static std::unique_ptr<Dsnetm> s_dsnetm;
+	static std::vector<std::unique_ptr<DsnetmClient>> s_dsnetmClients;
+	static int s_nextClientId;
+
+	// From the CPU thread: the target's packets and boots, in order.
+	struct TargetEvent
+	{
+		std::vector<u8> pkt; // empty for a boot
+		int cause;
+	};
+	static std::mutex s_eventMutex;
+	static std::deque<TargetEvent> s_events;
+
+	// A UDP socket connected to itself, so the CPU thread can wake select().
+	static socket_t s_wakeSock = BAD_SOCKET;
+	static std::atomic<bool> s_wakePending{false};
+
+	static bool WouldBlock()
+	{
+#ifdef _WIN32
+		return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+		return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+	}
+
+	static void SetNonBlocking(socket_t sock)
+	{
+#ifdef _WIN32
+		u_long one = 1;
+		ioctlsocket(sock, FIONBIO, &one);
+#else
+		fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
+#endif
+	}
+
+	static u64 NowMs()
+	{
+		return static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch())
+				.count());
+	}
+
+	static void Wake()
+	{
+		if (!s_wakePending.exchange(true, std::memory_order_acq_rel))
+		{
+			const char b = 0;
+			send(s_wakeSock, &b, 1, 0);
+		}
+	}
+
+	static void PostTargetEvent(TargetEvent ev)
+	{
+		{
+			std::lock_guard lock(s_eventMutex);
+			s_events.push_back(std::move(ev));
+		}
+		Wake();
+	}
+
+	static DsnetmClient* FindDsnetmClient(int id)
+	{
+		for (const auto& c : s_dsnetmClients)
+		{
+			if (c->id == id && !c->closed)
+				return c.get();
+		}
+		return nullptr;
+	}
+
+	static u16 PacketProto(const std::vector<u8>& pkt)
+	{
+		return pkt[4] | (pkt[5] << 8);
+	}
+
+	class DsnetmOutput final : public Dsnetm::Output
+	{
+	public:
+		void ToClient(int client, Dsnetm::Packet pkt) override
+		{
+			DsnetmClient* c = FindDsnetmClient(client);
+			if (!c)
+				return;
+			if (Dsnetm::IsTtyp(PacketProto(pkt)))
+			{
+				if (c->ttyBytes > TTY_MAX_SIZE)
+					OverflowTty(*c, PacketProto(pkt));
+				c->ttyBytes += pkt.size();
+			}
+			c->queue.push_back(std::move(pkt));
+		}
+
+		void ToTarget(Dsnetm::Packet pkt) override
+		{
+			QueueToTarget(std::move(pkt));
+		}
+
+		void CloseClient(int client) override
+		{
+			if (DsnetmClient* c = FindDsnetmClient(client))
+			{
+				Console.WriteLn("PIF: dsnetm client %d killed (NETMP KILL)", client);
+				c->closed = true;
+			}
+		}
+
+		void ResetTarget() override
+		{
+			Bridge::ResetTarget();
+		}
+
+		void FlushQueued(u16 proto) override
+		{
+			for (const auto& c : s_dsnetmClients)
+			{
+				c->queue.erase(std::remove_if(c->queue.begin(), c->queue.end(),
+								   [proto](const std::vector<u8>& p) { return PacketProto(p) == proto; }),
+					c->queue.end());
+				if (Dsnetm::IsTtyp(proto))
+					c->ttyBytes = 0;
+			}
+		}
+
+	private:
+		// ds_flush_tty: drop everything queued (not the packet being sent) for a
+		// note on this TTY protocol, addressed like the last packet dropped.
+		static void OverflowTty(DsnetmClient& c, u16 proto)
+		{
+			size_t skipped = 0;
+			u8 dst = 'H';
+			for (const std::vector<u8>& p : c.queue)
+			{
+				skipped += p.size();
+				dst = p[7];
+			}
+			c.queue.clear();
+			const std::string note = fmt::format("\n\n*** TTY buffer overflow. Skip {} bytes data ***\n\n", skipped);
+			std::vector<u8> pkt(12 + note.size(), 0);
+			pkt[0] = static_cast<u8>(pkt.size() & 0xff);
+			pkt[1] = static_cast<u8>(pkt.size() >> 8);
+			pkt[4] = static_cast<u8>(proto & 0xff);
+			pkt[5] = static_cast<u8>(proto >> 8);
+			pkt[6] = 'H';
+			pkt[7] = dst;
+			std::memcpy(pkt.data() + 12, note.data(), note.size());
+			c.queue.push_back(std::move(pkt));
+			c.ttyBytes = note.size();
+		}
+	};
+	static DsnetmOutput s_dsnetmOutput;
+
+	static void AcceptDsnetmClient()
+	{
+		sockaddr_in addr = {};
+		socklen_t len = sizeof(addr);
+		const socket_t sock = accept(s_listenSock, reinterpret_cast<sockaddr*>(&addr), &len);
+		if (sock == BAD_SOCKET)
+			return;
+		// select() can't take many more on Windows (FD_SETSIZE 64).
+		if (s_dsnetmClients.size() >= 60)
+		{
+			Console.Warning("PIF: dsnetm has too many clients, refusing one");
+			close_socket(sock);
+			return;
+		}
+		SetNoDelay(sock);
+		SetNonBlocking(sock);
+		auto c = std::make_unique<DsnetmClient>();
+		c->id = s_nextClientId++;
+		c->sock = sock;
+		char ip[INET_ADDRSTRLEN] = {};
+		inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+		Console.WriteLn("PIF: dsnetm client %d connected from %s:%u", c->id, ip, ntohs(addr.sin_port));
+		s_dsnetm->ClientOpened(c->id, NowMs());
+		s_dsnetmClients.push_back(std::move(c));
+	}
+
+	static void ReceiveFromClient(DsnetmClient& c)
+	{
+		char tmp[16384];
+		for (;;)
+		{
+			const int n = recv(c.sock, tmp, sizeof(tmp), 0);
+			if (n < 0 && WouldBlock())
+				break;
+			if (n <= 0)
+			{
+				c.closed = true;
+				return;
+			}
+			c.rx.insert(c.rx.end(), tmp, tmp + n);
+		}
+
+		size_t pos = 0;
+		while (!c.closed && c.rx.size() - pos >= 8)
+		{
+			const u16 len = c.rx[pos] | (c.rx[pos + 1] << 8);
+			if (len < 8)
+			{
+				Console.Error("PIF: dsnetm client %d sent a bad packet length %u, closing it", c.id, len);
+				c.closed = true;
+				return;
+			}
+			if (c.rx.size() - pos < len)
+				break;
+			s_dsnetm->FromClient(c.id, std::vector<u8>(c.rx.begin() + pos, c.rx.begin() + pos + len), NowMs());
+			pos += len;
+		}
+		c.rx.erase(c.rx.begin(), c.rx.begin() + pos);
+	}
+
+	static void SendToClient(DsnetmClient& c)
+	{
+		while (!c.closed)
+		{
+			if (c.sent == c.sending.size())
+			{
+				if (c.queue.empty())
+					return;
+				c.sending = std::move(c.queue.front());
+				c.queue.pop_front();
+				c.sent = 0;
+				if (Dsnetm::IsTtyp(PacketProto(c.sending)))
+					c.ttyBytes -= std::min(c.ttyBytes, c.sending.size());
+			}
+			const int n = send(c.sock, reinterpret_cast<const char*>(c.sending.data() + c.sent),
+				static_cast<int>(c.sending.size() - c.sent), 0);
+			if (n < 0 && WouldBlock())
+				return;
+			if (n <= 0)
+			{
+				c.closed = true;
+				return;
+			}
+			c.sent += n;
+		}
+	}
+
+	static void DsnetmMain()
+	{
+		Threading::SetNameOfCurrentThread("PIF dsnetm");
+
+		while (s_running.load(std::memory_order_acquire))
+		{
+			fd_set rfds, wfds;
+			FD_ZERO(&rfds);
+			FD_ZERO(&wfds);
+			socket_t maxfd = std::max(s_listenSock, s_wakeSock);
+			FD_SET(s_listenSock, &rfds);
+			FD_SET(s_wakeSock, &rfds);
+			for (const auto& c : s_dsnetmClients)
+			{
+				FD_SET(c->sock, &rfds);
+				if (c->sent < c->sending.size() || !c->queue.empty())
+					FD_SET(c->sock, &wfds);
+				maxfd = std::max(maxfd, c->sock);
+			}
+			timeval tv = {1, 0};
+			if (select(static_cast<int>(maxfd + 1), &rfds, &wfds, nullptr, &tv) < 0)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				continue;
+			}
+
+			if (FD_ISSET(s_wakeSock, &rfds))
+			{
+				// Clear the flag first: a wake after this point sends another byte.
+				s_wakePending.store(false, std::memory_order_release);
+				char tmp[64];
+				while (recv(s_wakeSock, tmp, sizeof(tmp), 0) > 0)
+				{
+				}
+			}
+			std::deque<TargetEvent> events;
+			{
+				std::lock_guard lock(s_eventMutex);
+				events.swap(s_events);
+			}
+			for (TargetEvent& ev : events)
+			{
+				if (ev.pkt.empty())
+					s_dsnetm->TargetBooted(ev.cause);
+				else
+					s_dsnetm->FromTarget(std::move(ev.pkt));
+			}
+
+			if (FD_ISSET(s_listenSock, &rfds))
+				AcceptDsnetmClient();
+			for (size_t i = 0; i < s_dsnetmClients.size(); i++)
+			{
+				DsnetmClient& c = *s_dsnetmClients[i];
+				if (!c.closed && FD_ISSET(c.sock, &rfds))
+					ReceiveFromClient(c);
+			}
+			// Send what's queued now rather than after the next select().
+			for (const auto& c : s_dsnetmClients)
+				SendToClient(*c);
+
+			for (auto it = s_dsnetmClients.begin(); it != s_dsnetmClients.end();)
+			{
+				if (!(*it)->closed)
+				{
+					++it;
+					continue;
+				}
+				Console.WriteLn("PIF: dsnetm client %d disconnected", (*it)->id);
+				close_socket((*it)->sock);
+				s_dsnetm->ClientClosed((*it)->id);
+				it = s_dsnetmClients.erase(it);
+			}
+		}
+
+		for (const auto& c : s_dsnetmClients)
+			close_socket(c->sock);
+		s_dsnetmClients.clear();
+	}
+
+	static bool MakeWakeSocket()
+	{
+		s_wakeSock = socket(AF_INET, SOCK_DGRAM, 0);
+		if (s_wakeSock == BAD_SOCKET)
+			return false;
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		socklen_t len = sizeof(addr);
+		if (bind(s_wakeSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+			getsockname(s_wakeSock, reinterpret_cast<sockaddr*>(&addr), &len) != 0 ||
+			connect(s_wakeSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+		{
+			close_socket(s_wakeSock);
+			s_wakeSock = BAD_SOCKET;
+			return false;
+		}
+		SetNonBlocking(s_wakeSock);
+		return true;
 	}
 
 	static void ReceiveLoop(socket_t sock)
@@ -339,10 +732,17 @@ namespace Pif::Bridge
 			}
 			s_listenSock = socket(AF_INET, SOCK_STREAM, 0);
 			int one = 1;
-			setsockopt(s_listenSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
+#ifdef _WIN32
+			// Windows' SO_REUSEADDR would let a second emulator take dsnetm's port.
+			const int reuse = s_dsnetmMode ? SO_EXCLUSIVEADDRUSE : SO_REUSEADDR;
+#else
+			const int reuse = SO_REUSEADDR;
+#endif
+			setsockopt(s_listenSock, SOL_SOCKET, reuse, reinterpret_cast<const char*>(&one), sizeof(one));
 			if (s_listenSock == BAD_SOCKET ||
 				bind(s_listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
-				listen(s_listenSock, 1) != 0)
+				listen(s_listenSock, s_dsnetmMode ? 5 : 1) != 0 ||
+				(s_dsnetmMode && !MakeWakeSocket()))
 			{
 				Console.Error("PIF: can't listen on %s:%u", s_hostName.c_str(), s_port);
 				if (s_listenSock != BAD_SOCKET)
@@ -351,7 +751,10 @@ namespace Pif::Bridge
 				s_enabled = false;
 				return;
 			}
-			Console.WriteLn("PIF: bridge listening on %s:%u", s_hostName.c_str(), s_port);
+			if (s_dsnetmMode)
+				Console.WriteLn("PIF: dsnetm %s listening on %s:%u", Dsnetm::VERSION, s_hostName.c_str(), s_port);
+			else
+				Console.WriteLn("PIF: bridge listening on %s:%u", s_hostName.c_str(), s_port);
 		}
 		else
 		{
@@ -359,7 +762,17 @@ namespace Pif::Bridge
 		}
 
 		s_running.store(true, std::memory_order_release);
-		s_thread = std::thread(ThreadMain);
+		if (s_dsnetmMode)
+		{
+			SetNonBlocking(s_listenSock);
+			s_dsnetm = std::make_unique<Dsnetm>(s_dsnetmOutput);
+			s_nextClientId = 1;
+			s_thread = std::thread(DsnetmMain);
+		}
+		else
+		{
+			s_thread = std::thread(ThreadMain);
+		}
 		if (const char* wd = std::getenv("PCSX2_PIF_WATCHDOG"); wd && wd[0] == '1')
 			s_watchdog = std::thread(WatchdogMain);
 	}
@@ -368,6 +781,21 @@ namespace Pif::Bridge
 	{
 		if (!s_running.exchange(false, std::memory_order_acq_rel))
 			return;
+
+		if (s_dsnetmMode)
+		{
+			Wake();
+			if (s_thread.joinable())
+				s_thread.join();
+			close_socket(s_listenSock);
+			s_listenSock = BAD_SOCKET;
+			close_socket(s_wakeSock);
+			s_wakeSock = BAD_SOCKET;
+			s_wakePending.store(false, std::memory_order_release);
+			s_dsnetm.reset();
+			std::lock_guard lock(s_eventMutex);
+			s_events.clear();
+		}
 
 		{
 			std::lock_guard lock(s_sockMutex);
@@ -417,6 +845,13 @@ namespace Pif::Bridge
 
 	void SendToHost(const u8* data, size_t size)
 	{
+		if (s_dsnetmMode)
+		{
+			if (size >= 8)
+				PostTargetEvent(TargetEvent{std::vector<u8>(data, data + size), 0});
+			return;
+		}
+
 		std::lock_guard lock(s_sockMutex);
 		if (s_clientSock == BAD_SOCKET)
 			return;
@@ -437,6 +872,19 @@ namespace Pif::Bridge
 	void OnHandshake()
 	{
 		const bool rebooted = s_targetBooted.exchange(true, std::memory_order_acq_rel);
+		if (s_dsnetmMode)
+		{
+			// What dsnetm does on mrp.o's EPIPE, with the cause RSTINFO would give: a NETMP
+			// reset, a reboot by the target itself, or a boot or reset from the emulator
+			// (taken as the reset button). Anything still queued was meant for the old boot.
+			int cause = rebooted ? Dsnetm::CAUSE_SOFTWARE : Dsnetm::CAUSE_BUTTON;
+			if (s_resetReplyOwed.exchange(false, std::memory_order_acq_rel))
+				cause = Dsnetm::CAUSE_NETMP;
+			Console.WriteLn("PIF: target booted (cause %d), dsnetm connects to it", cause);
+			ClearInbound();
+			PostTargetEvent(TargetEvent{{}, cause});
+			return;
+		}
 		if (s_resetReplyOwed.exchange(false, std::memory_order_acq_rel))
 		{
 			// NETMP RESETR: header (len 11, NETMP, H->H), then code 3, result 0 and the cause
@@ -470,6 +918,9 @@ namespace Pif::Bridge
 
 	void OnVmReset()
 	{
+		// dsnetm's packets for the old boot (its own connects come after the handshake).
+		if (s_dsnetmMode)
+			ClearInbound();
 		s_hold.store(false, std::memory_order_release);
 		s_targetBooted.store(false, std::memory_order_release);
 	}

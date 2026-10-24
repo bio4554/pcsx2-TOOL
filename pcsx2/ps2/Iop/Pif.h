@@ -42,11 +42,13 @@ namespace Pif
 	// Host side: queue one DECI2 packet for the IOP.
 	void QueueHostPacket(const std::vector<u8>& packet);
 
-	// TCP link to dsnetm (plays the TOOL's Linux board). Configured with the
-	// PCSX2_PIF_BRIDGE environment variable:
+	// The TOOL's Linux board: a TCP link to dsnetm, or dsnetm itself. Configured
+	// with the PCSX2_PIF_BRIDGE environment variable:
 	//   <port> or listen:[addr:]<port>   accept dsnetm (default addr 127.0.0.1)
 	//   connect:<host>:<port>            connect out, retrying every second
-	// The socket lives on its own thread. Everything that touches the card runs
+	//   dsnetm:[addr:]<port>             be dsnetm: accept its clients (dekko,
+	//                                    dsedb, ...), as the TOOL does on 8510
+	// The sockets live on their own thread. Everything that touches the card runs
 	// on the CPU thread (Poll, SendToHost, OnHandshake, OnVmReset).
 	namespace Bridge
 	{

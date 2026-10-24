@@ -628,6 +628,7 @@
     <ClCompile Include="ps2\Iop\IopHwWrite.cpp" />
     <ClCompile Include="ps2\Iop\Pif.cpp" />
     <ClCompile Include="ps2\Iop\PifBridge.cpp" />
+    <ClCompile Include="ps2\Iop\PifDsnetm.cpp" />
     <ClCompile Include="ps2\Iop\ToolSif2.cpp" />
     <ClCompile Include="CDVD\Ps1CD.cpp" />
     <ClCompile Include="CDVD\CDVD.cpp" />
@@ -1011,6 +1012,7 @@
     <ClInclude Include="IopHw.h" />
     <ClInclude Include="ps2\Iop\IopHw_Internal.h" />
     <ClInclude Include="ps2\Iop\Pif.h" />
+    <ClInclude Include="ps2\Iop\PifDsnetm.h" />
     <ClInclude Include="CDVD\Ps1CD.h" />
     <ClInclude Include="CDVD\CDVD.h" />
     <ClInclude Include="CDVD\CDVD_internal.h" />

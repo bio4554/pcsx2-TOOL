@@ -934,6 +934,7 @@ set(pcsx2ps2Sources
 	ps2/Iop/IopHwWrite.cpp
 	ps2/Iop/Pif.cpp
 	ps2/Iop/PifBridge.cpp
+	ps2/Iop/PifDsnetm.cpp
 	ps2/Iop/ToolSif2.cpp
 	ps2/Iop/PsxBios.cpp)
 
@@ -944,7 +945,8 @@ set(pcsx2ps2Headers
 	ps2/pgif.h
 	ps2/HwInternal.h
 	ps2/Iop/IopHw_Internal.h
-	ps2/Iop/Pif.h)
+	ps2/Iop/Pif.h
+	ps2/Iop/PifDsnetm.h)
 
 # RDebug sources
 set(pcsx2RDebugSources
