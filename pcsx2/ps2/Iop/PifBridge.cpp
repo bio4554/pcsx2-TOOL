@@ -310,7 +310,9 @@ namespace Pif::Bridge
 		if (!s_wakePending.exchange(true, std::memory_order_acq_rel))
 		{
 			const char b = 0;
-			send(s_wakeSock, &b, 1, 0);
+			// A byte that didn't go leaves the next wake to try again.
+			if (send(s_wakeSock, &b, 1, 0) != 1)
+				s_wakePending.store(false, std::memory_order_release);
 		}
 	}
 
@@ -633,13 +635,16 @@ namespace Pif::Bridge
 
 			if (FD_ISSET(s_wakeSock, &rfds))
 			{
-				// Clear the flag first: a wake after this point sends another byte.
-				s_wakePending.store(false, std::memory_order_release);
 				char tmp[64];
 				while (recv(s_wakeSock, tmp, sizeof(tmp), 0) > 0)
 				{
 				}
 			}
+			// Only after draining (crusade TR-31): a wake from here on sends a byte the next select()
+			// sees, and an event posted before it is in the swap below. Clearing first let the drain
+			// eat a wake's byte with the flag left set, and no wake sent anything after that: every
+			// target packet then waited out select()'s 1 s timeout.
+			s_wakePending.store(false, std::memory_order_seq_cst);
 			std::deque<TargetEvent> events;
 			{
 				std::lock_guard lock(s_eventMutex);
