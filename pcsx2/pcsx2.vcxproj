@@ -633,6 +633,7 @@
     <ClCompile Include="CDVD\Ps1CD.cpp" />
     <ClCompile Include="CDVD\CDVD.cpp" />
     <ClCompile Include="CDVD\CDVDcommon.cpp" />
+    <ClCompile Include="CDVD\ToolCdvdTiming.cpp" />
     <ClCompile Include="CDVD\CDVDisoReader.cpp" />
     <ClCompile Include="Ipu\IPU.cpp" />
     <ClCompile Include="Ipu\IPU_Fifo.cpp" />
@@ -1016,6 +1017,7 @@
     <ClInclude Include="CDVD\Ps1CD.h" />
     <ClInclude Include="CDVD\CDVD.h" />
     <ClInclude Include="CDVD\CDVD_internal.h" />
+    <ClInclude Include="CDVD\ToolCdvdTiming.h" />
     <ClInclude Include="CDVD\CDVDcommon.h" />
     <ClInclude Include="Ipu\IPU.h" />
     <ClInclude Include="Ipu\IPU_Fifo.h" />

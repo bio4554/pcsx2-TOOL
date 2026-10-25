@@ -231,6 +231,7 @@ set(pcsx2CDVDSources
 	CDVD/CsoFileReader.cpp
 	CDVD/GzippedFileReader.cpp
 	CDVD/ThreadedFileReader.cpp
+	CDVD/ToolCdvdTiming.cpp
 	)
 
 # CDVD headers
@@ -240,6 +241,7 @@ set(pcsx2CDVDHeaders
 	CDVD/CDVDcommon.h
 	CDVD/CDVD.h
 	CDVD/CDVD_internal.h
+	CDVD/ToolCdvdTiming.h
 	CDVD/CDVDdiscReader.h
 	CDVD/ChdFileReader.h
 	CDVD/CsoFileReader.h

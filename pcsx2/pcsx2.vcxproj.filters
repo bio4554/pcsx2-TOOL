@@ -671,6 +671,9 @@
     <ClCompile Include="CDVD\CDVDcommon.cpp">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
+    <ClCompile Include="CDVD\ToolCdvdTiming.cpp">
+      <Filter>System\Ps2\Iop\CDVD</Filter>
+    </ClCompile>
     <ClCompile Include="CDVD\CDVDisoReader.cpp">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClCompile>
@@ -1620,6 +1623,9 @@
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\CDVD_internal.h">
+      <Filter>System\Ps2\Iop\CDVD</Filter>
+    </ClInclude>
+    <ClInclude Include="CDVD\ToolCdvdTiming.h">
       <Filter>System\Ps2\Iop\CDVD</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\CDVDcommon.h">

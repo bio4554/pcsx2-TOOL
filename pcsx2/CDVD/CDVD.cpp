@@ -6,6 +6,7 @@
 #include "CDVD/CDVD_internal.h"
 #include "CDVD/IsoReader.h"
 #include "CDVD/IsoFileFormats.h"
+#include "CDVD/ToolCdvdTiming.h"
 #include "GS.h"
 #include "SIO/Sio.h"
 #include "Elfheader.h"
@@ -68,7 +69,7 @@ static void CDVDSECTORREADY_INT(u32 eCycle)
 	if (psxRegs.interrupt & (1 << IopEvt_CdvdSectorReady))
 		return;
 
-	if (EmuConfig.Speedhacks.fastCDVD)
+	if (EmuConfig.Speedhacks.fastCDVD && !ToolCdvd::Active())
 	{
 		if (eCycle < Cdvd_FullSeek_Cycles && eCycle > 1)
 			eCycle *= 0.5f;
@@ -81,7 +82,8 @@ static void CDVDREAD_INT(u32 eCycle)
 {
 	// Give it an arbitary FAST value. Good for ~5000kb/s in ULE when copying a file from CDVD to HDD
 	// Keep long seeks out though, as games may try to push dmas while seeking. (Tales of the Abyss)
-	if (EmuConfig.Speedhacks.fastCDVD)
+	// Not with TOOL mode's drive model, whose timing is the point.
+	if (EmuConfig.Speedhacks.fastCDVD && !ToolCdvd::Active())
 	{
 		if (eCycle < Cdvd_FullSeek_Cycles && eCycle > 1)
 			eCycle *= 0.5f;
@@ -827,8 +829,26 @@ static int cdvdTrayStateDetecting()
 	else
 		return CDVD_TYPE_DETCT; //Detecting any kind of disc existing
 }
+
+// The disc as TOOL mode's drive model sees it.
+static ToolCdvd::Disc cdvdToolDisc(CDVD_MODE_TYPE mode)
+{
+	ToolCdvd::Disc disc = {};
+	disc.dvd = mode == MODE_DVDROM;
+	s32 dualType;
+	if (disc.dvd && cdvdReadDvdDualInfo(&dualType, &disc.layer1Start) == 1 && dualType > 0)
+		disc.dual = true;
+	else
+		disc.layer1Start = 0;
+	disc.maxSector = cdvd.MaxSector;
+	return disc;
+}
+
 static u32 cdvdRotationTime(CDVD_MODE_TYPE mode)
 {
+	if (ToolCdvd::Active())
+		return ToolCdvd::RotationCycles(cdvdToolDisc(mode), cdvd.SpindlCtrl, cdvd.SeekToSector);
+
 	// CAV rotation is constant (minimum speed to maintain exact speed on outer dge
 	if (cdvd.SpindlCtrl & CDVD_SPINDLE_CAV)
 	{
@@ -876,6 +896,9 @@ static u32 cdvdRotationTime(CDVD_MODE_TYPE mode)
 
 static uint cdvdBlockReadTime(CDVD_MODE_TYPE mode) noexcept
 {
+	if (ToolCdvd::Active())
+		return ToolCdvd::SectorCycles(cdvdToolDisc(mode), cdvd.SpindlCtrl, cdvd.SeekToSector);
+
 	// CAV Read speed is roughly 41% in the centre full speed on outer edge. I imagine it's more logarithmic than this
 	if (cdvd.SpindlCtrl & CDVD_SPINDLE_CAV)
 	{
@@ -918,6 +941,7 @@ static uint cdvdBlockReadTime(CDVD_MODE_TYPE mode) noexcept
 void cdvdReset()
 {
 	std::memset(&cdvd, 0, sizeof(cdvd));
+	ToolCdvd::Reset();
 
 	cdvd.DiscType = CDVD_TYPE_NODISC;
 	cdvd.Spinning = false;
@@ -1443,14 +1467,19 @@ __fi void cdvdReadInterrupt()
 		CDVDREAD_INT(psxRemainingCycles(IopEvt_CdvdSectorReady) + ((cdvd.BlockSize / 4) * 12));
 }
 
+// What cdvdStartSeekInner did, for TOOL mode's command log.
+static const char* s_cdvdSeekWhat = "";
+
 // Returns the number of IOP cycles until the event completes.
-static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_to_CLV)
+static uint cdvdStartSeekInner(uint newsector, CDVD_MODE_TYPE mode, bool transition_to_CLV)
 {
+	const bool tool = ToolCdvd::Active();
 	cdvd.SeekToSector = newsector;
 
 	uint delta = abs(static_cast<s32>(cdvd.SeekToSector - cdvd.CurrentSector));
 	uint seektime = 0;
 	bool isSeeking = false;
+	s_cdvdSeekWhat = "read-ahead";
 
 	cdvdUpdateReady(CDVD_DRIVE_BUSY);
 	cdvd.Reading = 1;
@@ -1481,6 +1510,7 @@ static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_t
 	{
 		CDVD_LOG("CdSpinUp > Simulating CdRom Spinup Time, and seek to sector %d", cdvd.SeekToSector);
 		seektime = PSXCLK / 3; // 333ms delay
+		s_cdvdSeekWhat = "spin-up";
 		cdvd.Spinning = true;
 		cdvd.nextSectorsBuffered = 0;
 		CDVDSECTORREADY_INT(seektime + cdvd.ReadTime);
@@ -1490,7 +1520,13 @@ static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_t
 		// Select either Full or Fast seek depending on delta:
 		CDVDCancelReadAhead();
 
-		if (delta >= tbl_FastSeekDelta[mode])
+		if (tool)
+		{
+			const ToolCdvd::Seek seek = ToolCdvd::SeekCycles(cdvdToolDisc(mode), cdvd.SpindlCtrl, cdvd.CurrentSector, cdvd.SeekToSector);
+			seektime = seek.cycles;
+			s_cdvdSeekWhat = seek.kind == ToolCdvd::SeekKind::Lens ? "seek-lens" : "seek-sled";
+		}
+		else if (delta >= tbl_FastSeekDelta[mode])
 		{
 			// Full Seek
 			CDVD_LOG("CdSeek Begin > to sector %d, from %d - delta=%d [FULL]", cdvd.SeekToSector, cdvd.CurrentSector, delta);
@@ -1558,7 +1594,15 @@ static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_t
 	// Only do this on reads, the seek kind of accounts for this and then it reads the sectors after
 	if ((delta || cdvd.Action == cdvdAction_Seek) && !isSeeking && !cdvd.nextSectorsBuffered)
 	{
-		const u32 rotationalLatency = cdvdRotationTime(static_cast<CDVD_MODE_TYPE>(cdvdIsDVD())) / 2; // Half it to average the rotational latency.
+		u32 rotationalLatency = cdvdRotationTime(static_cast<CDVD_MODE_TYPE>(cdvdIsDVD())) / 2; // Half it to average the rotational latency.
+		if (tool)
+		{
+			// The read-ahead stopped: the drive's setup, then on average half a turn for its sector to come round.
+			// A contiguous command while it's still reading ahead costs nothing: cdvdfsv splits an EE read into
+			// 64-sector commands, and Sony's 0.8 s for one 1000-sector read leaves no room for a wait in each.
+			rotationalLatency += ToolCdvd::SetupCycles();
+			s_cdvdSeekWhat = "wait";
+		}
 		//DevCon.Warning("%s rotational latency at sector %d is %d cycles", (cdvd.SpindlCtrl & CDVD_SPINDLE_CAV) ? "CAV" : "CLV", cdvd.SeekToSector, rotationalLatency);
 		if (cdvd.Action == cdvdAction_Seek)
 		{
@@ -1587,6 +1631,20 @@ static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_t
 	}
 
 	return seektime;
+}
+
+static uint cdvdStartSeek(uint newsector, CDVD_MODE_TYPE mode, bool transition_to_CLV)
+{
+	const u32 from = cdvd.CurrentSector;
+	const uint cycles = cdvdStartSeekInner(newsector, mode, transition_to_CLV);
+	if (ToolCdvd::Active())
+	{
+		const bool read = cdvd.Action == cdvdAction_None;
+		const char* what = read ? "read" : cdvd.Action == cdvdAction_Seek ? "seek" : "standby";
+		ToolCdvd::LogCommand(cdvdToolDisc(mode), what, s_cdvdSeekWhat, from, newsector, read ? cdvd.SectorCnt : 0,
+			cdvd.SpindlCtrl, cdvd.ReadTime, cycles);
+	}
+	return cycles;
 }
 
 void cdvdUpdateTrayState()
