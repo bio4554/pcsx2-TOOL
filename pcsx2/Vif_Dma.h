@@ -124,6 +124,11 @@ extern void vif1Interrupt();
 extern void vif1VUFinish();
 extern void vif1Reset();
 
+// TOOL mode's buffered GS download (FiFo.cpp): drop it when a new download starts, and take what
+// VIF1 FIFO reads already fetched before reading more from the GS. Returns the quadwords taken.
+extern void Vif1DownloadDiscard();
+extern u32 Vif1DownloadTake(u128* out, u32 qwc);
+
 typedef int FnType_VifCmdHandler(int pass, const u32 *data);
 typedef FnType_VifCmdHandler* Fnptr_VifCmdHandler;
 

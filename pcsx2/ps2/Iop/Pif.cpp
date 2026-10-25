@@ -9,6 +9,7 @@
 #include "ps2/Iop/Pif.h"
 #include "VUmicro.h"
 #include "Vif.h"
+#include "Vif_Dma.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -298,6 +299,7 @@ namespace Pif
 		s_rxPendingOffset = 0;
 
 		ToolSif2::Reset();
+		Vif1DownloadDiscard();
 
 		// VU1 calibration fudge, off by default (VUmicro.h). PCSX2_VU1_CLOCK_SHIFT=1 makes
 		// each VU1 cycle cost 2 EE cycles; real VU1 runs at the EE clock, so 0 is accurate.

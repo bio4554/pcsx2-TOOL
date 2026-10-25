@@ -8,6 +8,10 @@
 #include "MTGS.h"
 #include "Vif.h"
 #include "Vif_Dma.h"
+#include "ps2/Iop/Pif.h"
+
+#include <algorithm>
+#include <vector>
 
 //////////////////////////////////////////////////////////////////////////
 /////////////////////////// Quick & dirty FIFO :D ////////////////////////
@@ -22,6 +26,28 @@
 // 0x5000 - 0x6000 : VIF1  (all registers map to 0x5000)
 // 0x6000 - 0x7000 : GS    (all registers map to 0x6000)
 // 0x7000 - 0x8000 : IPU   (registers map to 0x7000 and 0x7010, respectively)
+
+// TOOL mode (crusade TR-29): the EE kernel's RDIMG, the debuggers' VRAM grab, reads a GS download
+// through the VIF1 FIFO register one quadword at a time. Each read waited for the GS thread, which held
+// grabs to about half the TOOL's rate. The GS reads the whole image when the download starts anyway
+// (GSState::InitReadFIFO), so the first read takes all that's left of it at once and the next ones come
+// from here. Not saved in savestates: TOOL mode has none.
+static std::vector<u128> s_vif1Download;
+static size_t s_vif1DownloadPos;
+
+void Vif1DownloadDiscard()
+{
+	s_vif1Download.clear();
+	s_vif1DownloadPos = 0;
+}
+
+u32 Vif1DownloadTake(u128* out, u32 qwc)
+{
+	const u32 n = std::min<u32>(qwc, static_cast<u32>(s_vif1Download.size() - s_vif1DownloadPos));
+	std::copy_n(s_vif1Download.data() + s_vif1DownloadPos, n, out);
+	s_vif1DownloadPos += n;
+	return n;
+}
 
 void ReadFIFO_VIF1(mem128_t* out)
 {
@@ -38,7 +64,20 @@ void ReadFIFO_VIF1(mem128_t* out)
 		}
 		if (vif1Regs.stat.FQC > 0)
 		{
-			MTGS::InitAndReadFIFO(reinterpret_cast<u8*>(out), 1);
+			if (Pif::IsPresent())
+			{
+				if (s_vif1DownloadPos == s_vif1Download.size())
+				{
+					s_vif1Download.assign(std::max<u32>(1, vif1.GSLastDownloadSize), u128{});
+					s_vif1DownloadPos = 0;
+					MTGS::InitAndReadFIFO(reinterpret_cast<u8*>(s_vif1Download.data()), static_cast<u32>(s_vif1Download.size()));
+				}
+				Vif1DownloadTake(out, 1);
+			}
+			else
+			{
+				MTGS::InitAndReadFIFO(reinterpret_cast<u8*>(out), 1);
+			}
 			vif1.GSLastDownloadSize--;
 			GUNIT_LOG("ReadFIFO_VIF1");
 			if (vif1.GSLastDownloadSize <= 16)

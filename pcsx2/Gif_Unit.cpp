@@ -44,6 +44,7 @@ bool Gif_HandlerAD(u8* pMem)
 			// qwords, rounded down; any extra bits are lost
 			// games must take care to ensure transfer rectangles are exact multiples of a qword
 			vif1.GSLastDownloadSize = vif1.TRXREG.RRW * vif1.TRXREG.RRH * bpp >> 7;
+			Vif1DownloadDiscard();
 		}
 	}
 	else if (reg == GIF_A_D_REG_SIGNAL)

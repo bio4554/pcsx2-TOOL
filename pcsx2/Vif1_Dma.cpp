@@ -150,7 +150,10 @@ void vif1TransferToMemory()
 	}
 #endif
 
-	MTGS::InitAndReadFIFO(reinterpret_cast<u8*>(pMem), size);
+	// TOOL mode: what VIF1 FIFO reads already fetched from the GS comes first (FiFo.cpp).
+	const u32 taken = Vif1DownloadTake(pMem, size);
+	if (size > taken)
+		MTGS::InitAndReadFIFO(reinterpret_cast<u8*>(pMem + taken), size - taken);
 	//	pMem += size;
 
 	//Some games such as Alex Ferguson's Player Manager 2001 reads less than GSLastDownloadSize by VIF then reads the remainder by FIFO
