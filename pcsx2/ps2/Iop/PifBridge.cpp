@@ -18,12 +18,14 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
 #include "common/RedtapeWindows.h"
@@ -239,6 +241,7 @@ namespace Pif::Bridge
 	{
 		int id;
 		socket_t sock;
+		u16 port; // the client's, for the capture
 		std::vector<u8> rx;
 		std::deque<std::vector<u8>> queue;
 		std::vector<u8> sending;
@@ -328,6 +331,100 @@ namespace Pif::Bridge
 		return pkt[4] | (pkt[5] << 8);
 	}
 
+	// PCSX2_PIF_PCAP=<file> (dsnetm mode): every packet dsnetm passes, as a capture in tcpdump's
+	// format (Ethernet, IPv4, TCP, all on 127.0.0.1) so the WSL harness's tools and Wireshark read it:
+	// each client's stream from its own port to the listen port, the target's link from port 8600 (the
+	// relay's, in the WSL setup) to 8599. Checksums are left at 0. Manager thread only.
+	class Capture
+	{
+	public:
+		static constexpr u16 TARGET_PORT = 8600;
+		static constexpr u16 DSNETM_PORT = 8599;
+
+		bool Open(const char* path)
+		{
+			m_file = std::fopen(path, "wb");
+			if (!m_file)
+				return false;
+			u8 header[24] = {};
+			Put(header, 0, 0xa1b2c3d4u, 4); // microsecond timestamps
+			Put(header, 4, 2, 2);
+			Put(header, 6, 4, 2);
+			Put(header, 16, 262144, 4); // snaplen
+			Put(header, 20, 1, 4); // Ethernet
+			std::fwrite(header, 1, sizeof(header), m_file);
+			std::fflush(m_file);
+			return true;
+		}
+
+		void Close()
+		{
+			if (m_file)
+				std::fclose(m_file);
+			m_file = nullptr;
+			m_seq.clear();
+		}
+
+		void Connected(u16 client_port, u16 listen_port) { Frame(client_port, listen_port, 0x02, nullptr, 0); }
+		void Closed(u16 client_port, u16 listen_port) { Frame(client_port, listen_port, 0x11, nullptr, 0); }
+
+		void Data(u16 from, u16 to, const std::vector<u8>& pkt)
+		{
+			// An IPv4 packet holds at most 65,495 bytes of TCP payload.
+			for (size_t at = 0; at < pkt.size(); at += 65000)
+				Frame(from, to, 0x18, pkt.data() + at, std::min<size_t>(65000, pkt.size() - at));
+		}
+
+	private:
+		static void Put(u8* p, size_t off, u32 v, int bytes, bool big = false)
+		{
+			for (int i = 0; i < bytes; i++)
+				p[off + i] = static_cast<u8>(v >> ((big ? bytes - 1 - i : i) * 8));
+		}
+
+		void Frame(u16 from, u16 to, u8 flags, const u8* data, size_t n)
+		{
+			if (!m_file)
+				return;
+			u32& seq = m_seq[(static_cast<u32>(from) << 16) | to];
+			u8 h[16 + 14 + 20 + 20] = {};
+			const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::system_clock::now().time_since_epoch())
+			                     .count();
+			const u32 frame = static_cast<u32>(14 + 20 + 20 + n);
+			Put(h, 0, static_cast<u32>(now / 1000000), 4);
+			Put(h, 4, static_cast<u32>(now % 1000000), 4);
+			Put(h, 8, frame, 4);
+			Put(h, 12, frame, 4);
+			u8* eth = h + 16;
+			Put(eth, 12, 0x0800, 2, true);
+			u8* ip = eth + 14;
+			ip[0] = 0x45;
+			Put(ip, 2, static_cast<u32>(20 + 20 + n), 2, true);
+			Put(ip, 6, 0x4000, 2, true); // don't fragment
+			ip[8] = 64;
+			ip[9] = 6; // TCP
+			Put(ip, 12, 0x7f000001, 4, true);
+			Put(ip, 16, 0x7f000001, 4, true);
+			u8* tcp = ip + 20;
+			Put(tcp, 0, from, 2, true);
+			Put(tcp, 2, to, 2, true);
+			Put(tcp, 4, seq, 4, true);
+			tcp[12] = 5 << 4;
+			tcp[13] = flags;
+			Put(tcp, 14, 0xffff, 2, true);
+			std::fwrite(h, 1, sizeof(h), m_file);
+			if (n)
+				std::fwrite(data, 1, n, m_file);
+			std::fflush(m_file);
+			seq += static_cast<u32>(n) + ((flags & 0x03) ? 1 : 0); // SYN and FIN take a number
+		}
+
+		std::FILE* m_file = nullptr;
+		std::unordered_map<u32, u32> m_seq;
+	};
+	static Capture s_capture;
+
 	class DsnetmOutput final : public Dsnetm::Output
 	{
 	public:
@@ -342,11 +439,13 @@ namespace Pif::Bridge
 					OverflowTty(*c, PacketProto(pkt));
 				c->ttyBytes += pkt.size();
 			}
+			s_capture.Data(s_port, c->port, pkt);
 			c->queue.push_back(std::move(pkt));
 		}
 
 		void ToTarget(Dsnetm::Packet pkt) override
 		{
+			s_capture.Data(Capture::DSNETM_PORT, Capture::TARGET_PORT, pkt);
 			QueueToTarget(std::move(pkt));
 		}
 
@@ -423,6 +522,8 @@ namespace Pif::Bridge
 		auto c = std::make_unique<DsnetmClient>();
 		c->id = s_nextClientId++;
 		c->sock = sock;
+		c->port = ntohs(addr.sin_port);
+		s_capture.Connected(c->port, s_port);
 		char ip[INET_ADDRSTRLEN] = {};
 		inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
 		Console.WriteLn("PIF: dsnetm client %d connected from %s:%u", c->id, ip, ntohs(addr.sin_port));
@@ -458,7 +559,9 @@ namespace Pif::Bridge
 			}
 			if (c.rx.size() - pos < len)
 				break;
-			s_dsnetm->FromClient(c.id, std::vector<u8>(c.rx.begin() + pos, c.rx.begin() + pos + len), NowMs());
+			std::vector<u8> pkt(c.rx.begin() + pos, c.rx.begin() + pos + len);
+			s_capture.Data(c.port, s_port, pkt);
+			s_dsnetm->FromClient(c.id, std::move(pkt), NowMs());
 			pos += len;
 		}
 		c.rx.erase(c.rx.begin(), c.rx.begin() + pos);
@@ -536,7 +639,10 @@ namespace Pif::Bridge
 				if (ev.pkt.empty())
 					s_dsnetm->TargetBooted(ev.cause);
 				else
+				{
+					s_capture.Data(Capture::TARGET_PORT, Capture::DSNETM_PORT, ev.pkt);
 					s_dsnetm->FromTarget(std::move(ev.pkt));
+				}
 			}
 
 			if (FD_ISSET(s_listenSock, &rfds))
@@ -560,6 +666,7 @@ namespace Pif::Bridge
 				}
 				Console.WriteLn("PIF: dsnetm client %d disconnected", (*it)->id);
 				close_socket((*it)->sock);
+				s_capture.Closed((*it)->port, s_port);
 				s_dsnetm->ClientClosed((*it)->id);
 				it = s_dsnetmClients.erase(it);
 			}
@@ -767,6 +874,13 @@ namespace Pif::Bridge
 			SetNonBlocking(s_listenSock);
 			s_dsnetm = std::make_unique<Dsnetm>(s_dsnetmOutput);
 			s_nextClientId = 1;
+			if (const char* pcap = std::getenv("PCSX2_PIF_PCAP"); pcap && pcap[0])
+			{
+				if (s_capture.Open(pcap))
+					Console.WriteLn("PIF: dsnetm capture in %s", pcap);
+				else
+					Console.Error("PIF: can't write the capture %s", pcap);
+			}
 			s_thread = std::thread(DsnetmMain);
 		}
 		else
@@ -793,6 +907,7 @@ namespace Pif::Bridge
 			s_wakeSock = BAD_SOCKET;
 			s_wakePending.store(false, std::memory_order_release);
 			s_dsnetm.reset();
+			s_capture.Close();
 			std::lock_guard lock(s_eventMutex);
 			s_events.clear();
 		}
