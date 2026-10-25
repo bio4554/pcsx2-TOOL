@@ -33,8 +33,9 @@ namespace Pif
 			virtual void ToTarget(Packet pkt) = 0;
 			// NETMP KILL: close this client. Dsnetm has already forgotten it.
 			virtual void CloseClient(int client) = 0;
-			// NETMP RESET: reset the target. Call TargetBooted once it has booted again.
-			virtual void ResetTarget() = 0;
+			// NETMP RESET: reset the target, then connect with these boot parameters (EE 8 bytes, IOP 8
+			// bytes). Call TargetBooted once it has booted again.
+			virtual void ResetTarget(const std::array<u8, 16>& boot_params) = 0;
 			// A TTYP flush request: drop the packets of this protocol still queued for
 			// every client (not one already being sent).
 			virtual void FlushQueued(u16 proto) = 0;
@@ -58,8 +59,12 @@ namespace Pif
 
 		// The target has booted (DECI2DRP's handshake): what mrp.o's EPIPE and the
 		// reconnect that follows do in dsnetm. Sends registered clients a NETMP RESETR
-		// with this cause (none if negative), then DCMP connects to the IOP and the EE.
-		void TargetBooted(int cause);
+		// with this cause (none if negative), then DCMP connects to the IOP and the EE,
+		// unless the caller already put them in front of the target (`connects_sent`).
+		void TargetBooted(int cause, bool connects_sent = false);
+
+		// dsnetm's DCMP connect to a node (I or E), with the boot parameters.
+		static Packet ConnectPacket(u8 node, const std::array<u8, 16>& boot_params);
 
 		// The TTY protocols dsnetm delivers to every client that registered them.
 		static bool IsTtyp(u16 proto);

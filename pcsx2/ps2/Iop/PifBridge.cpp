@@ -15,6 +15,7 @@
 #include "common/Threading.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -264,7 +265,13 @@ namespace Pif::Bridge
 	{
 		std::vector<u8> pkt; // empty for a boot
 		int cause;
+		std::vector<std::vector<u8>> connects; // a boot's DCMP connects, already in the card
 	};
+
+	// The boot parameters for the next boot's connects (from NETMP RESET), which the CPU thread
+	// sends itself (OnHandshake).
+	static std::mutex s_bootParamsMutex;
+	static std::array<u8, 16> s_bootParams;
 	static std::mutex s_eventMutex;
 	static std::deque<TargetEvent> s_events;
 
@@ -458,8 +465,12 @@ namespace Pif::Bridge
 			}
 		}
 
-		void ResetTarget() override
+		void ResetTarget(const std::array<u8, 16>& boot_params) override
 		{
+			{
+				std::lock_guard lock(s_bootParamsMutex);
+				s_bootParams = boot_params;
+			}
 			Bridge::ResetTarget();
 		}
 
@@ -637,7 +648,11 @@ namespace Pif::Bridge
 			for (TargetEvent& ev : events)
 			{
 				if (ev.pkt.empty())
-					s_dsnetm->TargetBooted(ev.cause);
+				{
+					for (const std::vector<u8>& c : ev.connects)
+						s_capture.Data(Capture::DSNETM_PORT, Capture::TARGET_PORT, c);
+					s_dsnetm->TargetBooted(ev.cause, true);
+				}
 				else
 				{
 					s_capture.Data(Capture::TARGET_PORT, Capture::DSNETM_PORT, ev.pkt);
@@ -874,6 +889,10 @@ namespace Pif::Bridge
 			SetNonBlocking(s_listenSock);
 			s_dsnetm = std::make_unique<Dsnetm>(s_dsnetmOutput);
 			s_nextClientId = 1;
+			{
+				std::lock_guard lock(s_bootParamsMutex);
+				s_bootParams = {};
+			}
 			if (const char* pcap = std::getenv("PCSX2_PIF_PCAP"); pcap && pcap[0])
 			{
 				if (s_capture.Open(pcap))
@@ -963,7 +982,7 @@ namespace Pif::Bridge
 		if (s_dsnetmMode)
 		{
 			if (size >= 8)
-				PostTargetEvent(TargetEvent{std::vector<u8>(data, data + size), 0});
+				PostTargetEvent(TargetEvent{std::vector<u8>(data, data + size), 0, {}});
 			return;
 		}
 
@@ -995,9 +1014,26 @@ namespace Pif::Bridge
 			int cause = rebooted ? Dsnetm::CAUSE_SOFTWARE : Dsnetm::CAUSE_BUTTON;
 			if (s_resetReplyOwed.exchange(false, std::memory_order_acq_rel))
 				cause = Dsnetm::CAUSE_NETMP;
+			// The DCMP connects go into the card here, at the handshake, rather than from dsnetm's
+			// thread a moment later. Arriving at some random point after it, while the new boot's
+			// DECI2 stack wasn't ready yet, they sometimes broke a reboot the program did itself: the
+			// IOP read its own replies as DCMP requests and sent its "E not up" error forever, or
+			// crashed (crusade TR-30). In the card at the handshake, the new driver finds them once it
+			// starts receiving, as after a VM reset with the old WSL dsnetm.
 			Console.WriteLn("PIF: target booted (cause %d), dsnetm connects to it", cause);
 			ClearInbound();
-			PostTargetEvent(TargetEvent{{}, cause});
+			std::array<u8, 16> params;
+			{
+				std::lock_guard lock(s_bootParamsMutex);
+				params = s_bootParams;
+			}
+			TargetEvent ev{{}, cause, {}};
+			for (const u8 node : {'I', 'E'})
+			{
+				ev.connects.push_back(Dsnetm::ConnectPacket(node, params));
+				QueueHostPacket(ev.connects.back());
+			}
+			PostTargetEvent(std::move(ev));
 			return;
 		}
 		if (s_resetReplyOwed.exchange(false, std::memory_order_acq_rel))

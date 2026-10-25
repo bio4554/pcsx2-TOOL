@@ -24,7 +24,12 @@ namespace
 		void ToClient(int client, Packet pkt) override { toClient.emplace_back(client, std::move(pkt)); }
 		void ToTarget(Packet pkt) override { toTarget.push_back(std::move(pkt)); }
 		void CloseClient(int client) override { closed.push_back(client); }
-		void ResetTarget() override { resets++; }
+		void ResetTarget(const std::array<u8, 16>& params) override
+		{
+			resets++;
+			bootParams = params;
+		}
+		std::array<u8, 16> bootParams = {};
 		void FlushQueued(u16 proto) override { flushed.push_back(proto); }
 
 		void Clear()
@@ -143,6 +148,8 @@ TEST_F(DsnetmTest, ResetKeepsBootParametersAndForgetsNodes)
 	body.insert(body.end(), 16, 0);
 	dsnetm.FromClient(1, Pkt(0x0400, 'H', 'H', body), 0);
 	EXPECT_EQ(out.resets, 1);
+	EXPECT_EQ(out.bootParams[0], 1); // the new parameters, for connects sent by the bridge
+	EXPECT_EQ(out.bootParams[8], 0);
 	EXPECT_TRUE(out.toClient.empty()); // no reply until the boot
 
 	dsnetm.FromClient(1, Pkt(0x0230, 'H', 'E', {0, 0, 0, 0, 0, 0, 0, 0}), 0);
@@ -202,6 +209,18 @@ TEST_F(DsnetmTest, TargetErrorGoesToTheHolderAsNotConnected)
 	dsnetm.FromTarget(Pkt(0x0001, 'I', 'H', body));
 	ASSERT_EQ(out.toClient.size(), 1u);
 	EXPECT_EQ(out.toClient[0].second[9], 5);
+}
+
+TEST_F(DsnetmTest, ConnectsAlreadySentAreNotSentAgain)
+{
+	SetUpSession();
+	dsnetm.TargetBooted(Dsnetm::CAUSE_SOFTWARE, true);
+	EXPECT_TRUE(out.toTarget.empty());
+	ASSERT_EQ(out.toClient.size(), 1u); // the RESETR still goes out
+	// The nodes are forgotten until they answer the connects.
+	dsnetm.FromClient(1, Pkt(0x0230, 'H', 'E', {0, 0, 0, 0, 0, 0, 0, 0}), 0);
+	EXPECT_EQ(out.toClient.back().second[9], 5);
+	EXPECT_EQ(Dsnetm::ConnectPacket('I', {}), Pkt(0x0001, 'H', 'I', std::vector<u8>(24, 0)));
 }
 
 TEST_F(DsnetmTest, ProgramRebootGetsSoftwareCause)

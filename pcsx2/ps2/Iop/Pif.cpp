@@ -103,6 +103,9 @@ namespace Pif
 
 	static std::string s_cpLine;
 
+	// A boot handshake was accepted since the last VM reset.
+	static bool s_bootedSinceReset;
+
 	// PS2 -> host. The host drains words as soon as they arrive, so the Tx
 	// FIFO always reads empty and a packet just accumulates here until TXC.
 	static std::vector<u32> s_txPacket;
@@ -226,6 +229,31 @@ namespace Pif
 		s_txPacket.clear();
 	}
 
+	// A boot handshake was accepted after an earlier boot (a reboot the program does itself,
+	// sceSifRebootIop): the card's PS2 side starts clean for the new driver, as after a VM reset,
+	// which such a reboot isn't. Otherwise the new DECI2DRP finds the old driver's interrupt enables
+	// (IER) and whatever the old boot left in the FIFOs. With only the connects fixed (PifBridge.cpp,
+	// OnHandshake), one IOP reboot in about 600 still hung; with this as well, none in 1,200 (crusade
+	// TR-30). On the TOOL, dsnetm reopens /dev/mrp0 after the handshake's EPIPE; what the card itself
+	// keeps across an IOP reset is unknown. Needs proper testing against a real TOOL.
+	static void StartNewBoot()
+	{
+		u32 words = static_cast<u32>(s_rxFifo.size());
+		for (const std::vector<u32>& pkt : s_rxPending)
+			words += static_cast<u32>(pkt.size());
+		words -= s_rxPendingOffset;
+		if (words || !s_txPacket.empty())
+			Console.WriteLn("PIF: new boot, dropping %u words from the host (%u packets) and %u of an unsent packet",
+				words, static_cast<u32>(s_state.rxPackets + s_rxPending.size()), static_cast<u32>(s_txPacket.size()));
+		s_rxFifo.clear();
+		s_rxPending.clear();
+		s_rxPendingOffset = 0;
+		s_state.rxPackets = 0;
+		s_txPacket.clear();
+		s_state.ier = 0;
+		UpdateIrq();
+	}
+
 	// Model of the Linux side reacting to a signal from the PS2 (FSI write).
 	static void HostSignal(u16 bits)
 	{
@@ -256,7 +284,14 @@ namespace Pif
 			s_state.signals |= IST_SI2;
 
 			if (s_state.cps == 0x1300)
+			{
+				// After a VM reset the card is clean already, and what the host queued since (a WSL
+				// dsnetm's connects) is for this boot.
+				if (s_bootedSinceReset)
+					StartNewBoot();
+				s_bootedSinceReset = true;
 				Bridge::OnHandshake();
+			}
 
 			if (s_selfConnect && s_state.cps == 0x1300)
 			{
@@ -293,6 +328,7 @@ namespace Pif
 		const char* env = std::getenv("PCSX2_PIF_SELFCONNECT");
 		s_selfConnect = env && env[0] == '1';
 		s_cpLine.clear();
+		s_bootedSinceReset = false;
 		s_txPacket.clear();
 		s_rxFifo.clear();
 		s_rxPending.clear();

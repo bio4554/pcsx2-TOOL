@@ -310,12 +310,17 @@ namespace Pif
 		Send(owner, Make(PROTO_DCMP, pkt[6], body));
 	}
 
-	void Dsnetm::SendConnect(u8 node)
+	Dsnetm::Packet Dsnetm::ConnectPacket(u8 node, const std::array<u8, 16>& boot_params)
 	{
 		// Type 0, code 0, result 0, then the boot parameters.
 		Packet body(8, 0);
-		body.insert(body.end(), m_bootParams.begin(), m_bootParams.end());
-		m_out.ToTarget(Make(PROTO_DCMP, node, body));
+		body.insert(body.end(), boot_params.begin(), boot_params.end());
+		return Make(PROTO_DCMP, node, body);
+	}
+
+	void Dsnetm::SendConnect(u8 node)
+	{
+		m_out.ToTarget(ConnectPacket(node, m_bootParams));
 	}
 
 	void Dsnetm::ForgetNodes()
@@ -325,7 +330,7 @@ namespace Pif
 		m_bounced.clear();
 	}
 
-	void Dsnetm::TargetBooted(int cause)
+	void Dsnetm::TargetBooted(int cause, bool connects_sent)
 	{
 		ForgetNodes();
 		if (cause >= 0)
@@ -333,6 +338,8 @@ namespace Pif
 			const u8 body[3] = {NETMP_RESETR, NETMP_OK, static_cast<u8>(cause)};
 			Deliver(0, Make(PROTO_NETMP, NODE_HOST, body, sizeof(body)));
 		}
+		if (connects_sent)
+			return;
 		if (m_connectIop)
 			SendConnect(NODE_IOP);
 		if (m_connectEe)
@@ -424,7 +431,6 @@ namespace Pif
 			case NETMP_RESET:
 			{
 				// No reply: the RESETR goes to every client once the target has booted.
-				m_out.ResetTarget();
 				if (na == 34)
 				{
 					// EE and IOP boot parameters; all ones keeps the saved ones.
@@ -434,6 +440,7 @@ namespace Pif
 					if (!keep(20))
 						std::memcpy(m_bootParams.data() + 8, pkt.data() + 20, 8);
 				}
+				m_out.ResetTarget(m_bootParams);
 				ForgetNodes();
 				return;
 			}
