@@ -389,6 +389,26 @@ namespace Pif::Bridge
 				PadScript::Stop(pr->port, pr->slot);
 				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
 			}
+			case Emup::CODE_PAD_PLUG:
+			{
+				const std::optional<Emup::PadPlug> plug = Emup::ParsePadPlug(req);
+				if (!plug)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				const Emup::Result r = PadScript::Plug(plug->pad.port, plug->pad.slot, plug->plugged);
+				if (r != Emup::RESULT_OK)
+					return Emup::Reply(req, r);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(plug->pad.port, plug->pad.slot)));
+			}
+			case Emup::CODE_PAD_ANALOG:
+			{
+				const std::optional<Emup::PadRequest> pr = Emup::ParsePad(req);
+				if (!pr)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				const Emup::Result r = PadScript::Analog(pr->port, pr->slot);
+				if (r != Emup::RESULT_OK)
+					return Emup::Reply(req, r);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
+			}
 			default:
 				return Emup::Reply(req, Emup::RESULT_NOCODE);
 		}
@@ -563,6 +583,8 @@ namespace Pif::Bridge
 				case Emup::CODE_PAD_DETACH:
 				case Emup::CODE_PAD_PLAY:
 				case Emup::CODE_PAD_STOP:
+				case Emup::CODE_PAD_PLUG:
+				case Emup::CODE_PAD_ANALOG:
 					Host::RunOnCPUThread([client, req = std::move(*req)]() { PostEmupReply(client, AnswerOnCpu(req)); });
 					return;
 				default:

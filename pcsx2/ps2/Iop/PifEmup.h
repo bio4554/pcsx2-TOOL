@@ -40,6 +40,10 @@ namespace Pif::Emup
 		CODE_PAD_PLAYR = 0x17,
 		CODE_PAD_STOP = 0x18,
 		CODE_PAD_STOPR = 0x19,
+		CODE_PAD_PLUG = 0x1a,
+		CODE_PAD_PLUGR = 0x1b,
+		CODE_PAD_ANALOG = 0x1c,
+		CODE_PAD_ANALOGR = 0x1d,
 		CODE_BAD = 0xff, // the reply to a body too short to have a code and id
 	};
 
@@ -58,7 +62,8 @@ namespace Pif::Emup
 	constexpr u32 FEATURE_PAD_SET = 1u << 1; // PAD_SET and PAD_DETACH
 	constexpr u32 FEATURE_PAD_PLAY = 1u << 2; // PAD_PLAY and PAD_STOP, and PAD_STATUSR's play fields
 	constexpr u32 FEATURE_PAD_SYNC = 1u << 3; // PLAY_SYNC, and PAD_STATUSR's sync fields
-	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET | FEATURE_PAD_PLAY | FEATURE_PAD_SYNC;
+	constexpr u32 FEATURE_PAD_PLUG = 1u << 4; // PAD_PLUG and PAD_ANALOG, and FLAG_UNPLUGGED
+	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET | FEATURE_PAD_PLAY | FEATURE_PAD_SYNC | FEATURE_PAD_PLUG;
 
 	struct Request
 	{
@@ -105,6 +110,7 @@ namespace Pif::Emup
 		FLAG_ANALOG_LOCKED = 1 << 1,
 		FLAG_CONFIG = 1 << 2, // in config mode (escape command 0x43)
 		FLAG_PLUGGING = 1 << 3, // still "being plugged in" after a swap (ejectTicks)
+		FLAG_UNPLUGGED = 1 << 4, // a host tool has unplugged the pad (PAD_PLUG): type is PAD_NONE
 	};
 	constexpr size_t PAD_DATA_SIZE = 18;
 
@@ -203,4 +209,27 @@ namespace Pif::Emup
 	};
 	// nullopt if the payload's count doesn't match its length.
 	std::optional<PadPlayPart> ParsePadPlay(const Request& req);
+
+	// PAD_PLUG asks with u8 port, u8 slot, u8 plugged, u8 0: plugged 0 takes the
+	// pad out of the port (the program sees the port empty), 1 puts the pad the
+	// emulator's settings give the port back in, as from power-on: digital and
+	// the analog light off, so the program's driver finds it and sets it up
+	// again (the program sees the gap only if it polled while the port was
+	// empty). Unplugging an empty port, or
+	// plugging a full one, changes nothing; RESULT_NOPAD if the settings give the
+	// port no pad. The tool's hold on the pad (PAD_SET, PAD_PLAY) is the port's,
+	// so it survives: a play goes on counting frames while the port is empty.
+	// PAD_DETACH doesn't plug a pad back in.
+	//
+	// PAD_ANALOG (a PadRequest) presses and releases the pad's analog button,
+	// whoever holds the pad. Like a real one, the press switches between digital
+	// and analog only while the program hasn't locked the mode (FLAG_ANALOG_LOCKED);
+	// RESULT_NOPAD with no DualShock 2 in the port. PAD_PLUGR and PAD_ANALOGR
+	// carry the PadStatus after the change.
+	struct PadPlug
+	{
+		PadRequest pad;
+		bool plugged;
+	};
+	std::optional<PadPlug> ParsePadPlug(const Request& req);
 } // namespace Pif::Emup

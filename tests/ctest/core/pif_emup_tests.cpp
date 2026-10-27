@@ -94,6 +94,24 @@ TEST(EmupTest, PadSetCarriesThePadThenTheDataBytes)
 	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_SETR, RESULT_NOPAD, 0, 0, 5, 0, 0, 0}));
 }
 
+TEST(EmupTest, PadPlugCarriesWhetherThePadGoesIn)
+{
+	auto req = *Parse(Pkt({CODE_PAD_PLUG, 0, 0, 0, 8, 0, 0, 0, 1, 0, 1, 0}));
+	auto plug = ParsePadPlug(req);
+	ASSERT_TRUE(plug);
+	EXPECT_EQ(plug->pad.port, 1);
+	EXPECT_TRUE(plug->plugged);
+	req.payload[2] = 0;
+	plug = ParsePadPlug(req);
+	ASSERT_TRUE(plug);
+	EXPECT_FALSE(plug->plugged);
+	req.payload[2] = 2;
+	EXPECT_FALSE(ParsePadPlug(req));
+	req.payload = {0, 0, 1};
+	EXPECT_FALSE(ParsePadPlug(req));
+	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_PLUGR, RESULT_NOPAD, 0, 0, 8, 0, 0, 0}));
+}
+
 TEST(EmupTest, PadPlayCarriesItsEntriesByCount)
 {
 	std::vector<u8> body = {CODE_PAD_PLAY, 0, 0, 0, 6, 0, 0, 0, 0, 0, PLAY_FIRST | PLAY_START, 0, 2, 0, 0, 0};

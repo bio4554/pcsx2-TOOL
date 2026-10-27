@@ -49,6 +49,8 @@ namespace Pad
 	static const char* GetControllerTypeName(Pad::ControllerType type);
 
 	static PadBase* CreatePad(u8 unifiedSlot, Pad::ControllerType controllerType, size_t ejectTicks = 0);
+	// The port's settings (deadzones, scales, ...) into its pad.
+	static void ApplyPadSettings(const SettingsInterface& si, u32 port, PadBase* pad);
 
 	static void LoadMacroButtonConfig(
 		const SettingsInterface& si, u32 pad, const ControllerInfo* ci, const std::string& section);
@@ -56,6 +58,8 @@ namespace Pad
 
 	static std::array<std::array<MacroButton, NUM_MACRO_BUTTONS_PER_CONTROLLER>, NUM_CONTROLLER_PORTS> s_macro_buttons;
 	static std::array<std::unique_ptr<PadBase>, NUM_CONTROLLER_PORTS> s_controllers;
+	// The ports a host tool has unplugged (Unplug).
+	static std::array<bool, NUM_CONTROLLER_PORTS> s_unplugged;
 
 	bool mtapPort0LastState;
 	bool mtapPort1LastState;
@@ -70,6 +74,7 @@ void Pad::Shutdown()
 {
 	for (auto& port : s_controllers)
 		port.reset();
+	s_unplugged = {};
 }
 
 const char* Pad::ControllerInfo::GetLocalizedName() const
@@ -104,11 +109,12 @@ void Pad::LoadConfig(const SettingsInterface& si)
 		PadBase* pad = Pad::GetPad(i);
 
 		// If pad pointer is not occupied yet, type in settings no longer matches the current type, or a multitap was slotted in/out,
-		// then reconstruct a new pad.
-		if (!pad || pad->GetType() != ci->type || (mtapPort0Changed && (i <= 4 && i != 1)) || (mtapPort1Changed && (i >= 5 || i == 1)))
+		// then reconstruct a new pad. A port a host tool has unplugged stays empty.
+		if (!pad || (s_unplugged[i] ? pad->GetType() != ControllerType::NotConnected :
+		                              (pad->GetType() != ci->type || (mtapPort0Changed && (i <= 4 && i != 1)) || (mtapPort1Changed && (i >= 5 || i == 1)))))
 		{
 			// If the slot is a multitap slot, and the multitap is not plugged in, then the pad should be forced to Not Connected.
-			if (i > 1 && ((i <= 4 && !EmuConfig.Pad.MultitapPort0_Enabled) || (i > 4 && !EmuConfig.Pad.MultitapPort1_Enabled)))
+			if (s_unplugged[i] || (i > 1 && ((i <= 4 && !EmuConfig.Pad.MultitapPort0_Enabled) || (i > 4 && !EmuConfig.Pad.MultitapPort1_Enabled))))
 			{
 				pad = Pad::CreatePad(i, Pad::ControllerType::NotConnected, (VMManager::GetState() != VMState::Shutdown ? Pad::DEFAULT_EJECT_TICKS : 0));
 			}
@@ -122,34 +128,42 @@ void Pad::LoadConfig(const SettingsInterface& si)
 			pxAssert(pad);
 		}
 
-		const float axis_deadzone = si.GetFloatValue(section.c_str(), "Deadzone", Pad::DEFAULT_STICK_DEADZONE);
-		const float axis_scale = si.GetFloatValue(section.c_str(), "AxisScale", Pad::DEFAULT_STICK_SCALE);
-		const bool use_diagonal_scale_correction = si.GetBoolValue(section.c_str(), "UseDiagonalScaleCorrection", Pad::DEFAULT_USE_DIAGONAL_SCALE_CORRECTION);
-		const float button_deadzone = si.GetFloatValue(section.c_str(), "ButtonDeadzone", Pad::DEFAULT_BUTTON_DEADZONE);
-		pad->SetAxisScale(axis_deadzone, axis_scale);
-		pad->SetDiagonalScaleCorrection(use_diagonal_scale_correction);
-		pad->SetButtonDeadzone(button_deadzone);
-
-		if (ci->vibration_caps != Pad::VibrationCapabilities::NoVibration)
-		{
-			const float large_motor_scale = si.GetFloatValue(section.c_str(), "LargeMotorScale", Pad::DEFAULT_MOTOR_SCALE);
-			const float small_motor_scale = si.GetFloatValue(section.c_str(), "SmallMotorScale", Pad::DEFAULT_MOTOR_SCALE);
-			pad->SetVibrationScale(0, large_motor_scale);
-			pad->SetVibrationScale(1, small_motor_scale);
-		}
-
-		const float pressure_modifier = si.GetFloatValue(section.c_str(), "PressureModifier", 1.0f);
-		pad->SetPressureModifier(pressure_modifier);
-
-		const int invert_l = si.GetIntValue(section.c_str(), "InvertL", 0);
-		const int invert_r = si.GetIntValue(section.c_str(), "InvertR", 0);
-		pad->SetAnalogInvertL((invert_l & 1) != 0, (invert_l & 2) != 0);
-		pad->SetAnalogInvertR((invert_r & 1) != 0, (invert_r & 2) != 0);
+		ApplyPadSettings(si, i, pad);
 		LoadMacroButtonConfig(si, i, ci, section);
 	}
 
 	Pad::mtapPort0LastState = EmuConfig.Pad.MultitapPort0_Enabled;
 	Pad::mtapPort1LastState = EmuConfig.Pad.MultitapPort1_Enabled;
+}
+
+void Pad::ApplyPadSettings(const SettingsInterface& si, u32 i, PadBase* pad)
+{
+	const std::string section = GetConfigSection(i);
+	const ControllerInfo* ci = GetControllerInfo(EmuConfig.Pad.Ports[i].Type);
+	pxAssert(ci);
+	const float axis_deadzone = si.GetFloatValue(section.c_str(), "Deadzone", Pad::DEFAULT_STICK_DEADZONE);
+	const float axis_scale = si.GetFloatValue(section.c_str(), "AxisScale", Pad::DEFAULT_STICK_SCALE);
+	const bool use_diagonal_scale_correction = si.GetBoolValue(section.c_str(), "UseDiagonalScaleCorrection", Pad::DEFAULT_USE_DIAGONAL_SCALE_CORRECTION);
+	const float button_deadzone = si.GetFloatValue(section.c_str(), "ButtonDeadzone", Pad::DEFAULT_BUTTON_DEADZONE);
+	pad->SetAxisScale(axis_deadzone, axis_scale);
+	pad->SetDiagonalScaleCorrection(use_diagonal_scale_correction);
+	pad->SetButtonDeadzone(button_deadzone);
+
+	if (ci->vibration_caps != Pad::VibrationCapabilities::NoVibration)
+	{
+		const float large_motor_scale = si.GetFloatValue(section.c_str(), "LargeMotorScale", Pad::DEFAULT_MOTOR_SCALE);
+		const float small_motor_scale = si.GetFloatValue(section.c_str(), "SmallMotorScale", Pad::DEFAULT_MOTOR_SCALE);
+		pad->SetVibrationScale(0, large_motor_scale);
+		pad->SetVibrationScale(1, small_motor_scale);
+	}
+
+	const float pressure_modifier = si.GetFloatValue(section.c_str(), "PressureModifier", 1.0f);
+	pad->SetPressureModifier(pressure_modifier);
+
+	const int invert_l = si.GetIntValue(section.c_str(), "InvertL", 0);
+	const int invert_r = si.GetIntValue(section.c_str(), "InvertR", 0);
+	pad->SetAnalogInvertL((invert_l & 1) != 0, (invert_l & 2) != 0);
+	pad->SetAnalogInvertR((invert_r & 1) != 0, (invert_r & 2) != 0);
 }
 
 Pad::ControllerType Pad::GetDefaultPadType(u32 pad)
@@ -538,6 +552,32 @@ bool Pad::HasConnectedPad(u8 unifiedSlot)
 {
 	return (
 		unifiedSlot < NUM_CONTROLLER_PORTS && s_controllers[unifiedSlot]->GetType() != ControllerType::NotConnected);
+}
+
+void Pad::Unplug(u8 unifiedSlot)
+{
+	if (unifiedSlot >= NUM_CONTROLLER_PORTS || s_unplugged[unifiedSlot])
+		return;
+	s_unplugged[unifiedSlot] = true;
+	CreatePad(unifiedSlot, ControllerType::NotConnected);
+}
+
+void Pad::Plug(u8 unifiedSlot)
+{
+	if (unifiedSlot >= NUM_CONTROLLER_PORTS || !s_unplugged[unifiedSlot])
+		return;
+	s_unplugged[unifiedSlot] = false;
+	// No eject ticks: the program has had its gap, and libpad2's sio2d only
+	// checks an empty port about once a second, so 50 ticks would hold the new
+	// pad back for about 50 seconds of the program's time.
+	PadBase* pad = CreatePad(unifiedSlot, EmuConfig.Pad.Ports[unifiedSlot].Type);
+	const std::unique_lock lock = Host::GetSettingsLock();
+	ApplyPadSettings(*Host::GetSettingsInterface(), unifiedSlot, pad);
+}
+
+bool Pad::IsUnplugged(u8 unifiedSlot)
+{
+	return unifiedSlot < NUM_CONTROLLER_PORTS && s_unplugged[unifiedSlot];
 }
 
 PadBase* Pad::GetPad(u8 port, u8 slot)

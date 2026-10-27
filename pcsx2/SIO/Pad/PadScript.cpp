@@ -72,6 +72,15 @@ namespace PadScript
 			return pad && pad->GetType() == Pad::ControllerType::DualShock2 ? static_cast<PadDualshock2*>(pad) : nullptr;
 		}
 
+		// Whether the tool can hold the pad in this port: a DualShock 2, or one
+		// it has unplugged, whose state waits for it to be plugged back in.
+		bool Holdable(u8 port)
+		{
+			const u8 unifiedSlot = sioConvertPortAndSlotToPad(port, 0);
+			return Dualshock2(port) || (Pad::IsUnplugged(unifiedSlot) &&
+			                               EmuConfig.Pad.Ports[unifiedSlot].Type == Pad::ControllerType::DualShock2);
+		}
+
 		// The data bytes into the pad, past the deadzone, scale and pressure
 		// modifier that host input goes through (input recording's way in).
 		void Write(PadDualshock2* pad, const Data& data)
@@ -169,7 +178,11 @@ namespace PadScript
 
 		PadBase* pad = Pad::GetPad(port, slot);
 		if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
+		{
+			if (Pad::IsUnplugged(sioConvertPortAndSlotToPad(port, slot)))
+				s.flags = FLAG_UNPLUGGED;
 			return s;
+		}
 		if (pad->GetType() != Pad::ControllerType::DualShock2)
 		{
 			s.type = PAD_OTHER;
@@ -200,12 +213,12 @@ namespace PadScript
 
 	Pif::Emup::Result Set(u8 port, u8 slot, const Data& data)
 	{
-		PadDualshock2* pad = port < std::size(s_owned) && slot == 0 ? Dualshock2(port) : nullptr;
-		if (!pad)
+		if (port >= std::size(s_owned) || slot != 0 || !Holdable(port))
 			return Pif::Emup::RESULT_NOPAD;
 		s_play[port] = {};
 		s_owned[port] = data;
-		Write(pad, data);
+		if (PadDualshock2* pad = Dualshock2(port))
+			Write(pad, data);
 		return Pif::Emup::RESULT_OK;
 	}
 
@@ -213,7 +226,7 @@ namespace PadScript
 	{
 		using namespace Pif::Emup;
 		const u8 port = part.pad.port;
-		if (port >= std::size(s_play) || part.pad.slot != 0 || !Dualshock2(port))
+		if (port >= std::size(s_play) || part.pad.slot != 0 || !Holdable(port))
 			return RESULT_NOPAD;
 		Script& play = s_play[port];
 		const bool first = part.flags & PLAY_FIRST;
@@ -254,9 +267,42 @@ namespace PadScript
 			if (part.flags & PLAY_SYNC)
 				play.sync = part.sync_addr;
 			s_owned[port] = s_released;
-			Write(Dualshock2(port), s_released);
+			if (PadDualshock2* pad = Dualshock2(port))
+				Write(pad, s_released);
 		}
 		return RESULT_OK;
+	}
+
+	Pif::Emup::Result Plug(u8 port, u8 slot, bool plugged)
+	{
+		if (port >= std::size(s_owned) || slot != 0)
+			return Pif::Emup::RESULT_NOPAD;
+		const u8 unifiedSlot = sioConvertPortAndSlotToPad(port, slot);
+		if (!plugged)
+		{
+			Pad::Unplug(unifiedSlot);
+			return Pif::Emup::RESULT_OK;
+		}
+		if (EmuConfig.Pad.Ports[unifiedSlot].Type == Pad::ControllerType::NotConnected)
+			return Pif::Emup::RESULT_NOPAD;
+		Pad::Plug(unifiedSlot);
+		// The new pad sends the tool's state from its first answer.
+		if (PadDualshock2* pad = Dualshock2(port); pad && s_owned[port])
+			Write(pad, *s_owned[port]);
+		return Pif::Emup::RESULT_OK;
+	}
+
+	Pif::Emup::Result Analog(u8 port, u8 slot)
+	{
+		PadDualshock2* pad = slot == 0 ? Dualshock2(port) : nullptr;
+		if (!pad)
+			return Pif::Emup::RESULT_NOPAD;
+		// The host's own way in (its "Analog Toggle" binding), which keeps to the
+		// mode lock. Neither the tool's state nor Write holds the button, so the
+		// release is all that's left of it.
+		pad->Set(PadDualshock2::Inputs::PAD_ANALOG, 1.0f);
+		pad->Set(PadDualshock2::Inputs::PAD_ANALOG, 0.0f);
+		return Pif::Emup::RESULT_OK;
 	}
 
 	void Stop(u8 port, u8 slot)

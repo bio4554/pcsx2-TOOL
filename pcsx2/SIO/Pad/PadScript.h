@@ -37,6 +37,14 @@ namespace PadScript
 	// Ends a play; the pad holds what it sends now, and stays the tool's.
 	void Stop(u8 port, u8 slot);
 
+	// Takes the pad out of the port, or puts the configured one back in as a new
+	// pad (PAD_PLUG); the tool's hold on the port and its play go on. RESULT_NOPAD
+	// to plug a port the settings leave empty.
+	Pif::Emup::Result Plug(u8 port, u8 slot, bool plugged);
+	// Presses and releases the analog button (PAD_ANALOG); RESULT_NOPAD with no
+	// DualShock 2 in the port.
+	Pif::Emup::Result Analog(u8 port, u8 slot);
+
 	// Whether the tool has this pad (Pad's unified slot numbering).
 	bool Owns(u32 unifiedSlot);
 	// Writes the tool's state into its pads; once per vsync, after host input.

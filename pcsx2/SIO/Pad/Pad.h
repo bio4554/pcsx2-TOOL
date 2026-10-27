@@ -60,6 +60,15 @@ namespace Pad
 
 	bool HasConnectedPad(u8 unifiedSlot);
 
+	// For a host tool (PadScript): takes the pad out of its port, or puts the
+	// configured one back in. A pad put back is a new one, as from power-on
+	// (digital, the analog light off), and answers the next poll. An unplugged
+	// port stays empty across settings reloads until it's plugged again or the
+	// VM shuts down.
+	void Unplug(u8 unifiedSlot);
+	void Plug(u8 unifiedSlot);
+	bool IsUnplugged(u8 unifiedSlot);
+
 	PadBase* GetPad(u8 port, u8 slot);
 	PadBase* GetPad(const u8 unifiedSlot);
 

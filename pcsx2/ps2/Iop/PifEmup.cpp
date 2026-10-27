@@ -92,6 +92,14 @@ namespace Pif::Emup
 		return set;
 	}
 
+	std::optional<PadPlug> ParsePadPlug(const Request& req)
+	{
+		const std::optional<PadRequest> pad = ParsePad(req);
+		if (!pad || req.payload[2] > 1)
+			return std::nullopt;
+		return PadPlug{*pad, req.payload[2] != 0};
+	}
+
 	std::vector<u8> PadStatusPayload(const PadStatus& s)
 	{
 		std::vector<u8> p = {s.port, s.slot, s.type, s.owner, s.id, s.flags};
