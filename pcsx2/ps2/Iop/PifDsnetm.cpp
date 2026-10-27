@@ -16,6 +16,7 @@ namespace Pif
 		constexpr u16 PROTO_DSNETM_CMD = 0x0410; // dsnetm's own command line
 		constexpr u16 PROTO_COMPORT = 0x0412;
 		constexpr u16 PROTO_NETDEV = 0x0510;
+		constexpr u16 PROTO_EMUP = 0xE001; // PifEmup.h
 
 		constexpr u8 NODE_HOST = 'H';
 		constexpr u8 NODE_IOP = 'I';
@@ -371,6 +372,8 @@ namespace Pif
 		}
 		if (proto == PROTO_NETMP)
 			Netmp(*c, pkt, now_ms);
+		else if (proto == PROTO_EMUP)
+			m_out.Emulator(client, std::move(pkt));
 		else if (proto != PROTO_DSNETM_CMD) // dsnetm's command line isn't emulated
 			Route(client, pkt);
 	}

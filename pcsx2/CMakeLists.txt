@@ -457,6 +457,7 @@ set(pcsx2PADSources
 	SIO/Pad/PadNegcon.cpp
 	SIO/Pad/PadPopn.cpp
 	SIO/Pad/PadNotConnected.cpp
+	SIO/Pad/PadScript.cpp
 )
 set(pcsx2PADHeaders
 	SIO/Pad/Pad.h
@@ -466,6 +467,7 @@ set(pcsx2PADHeaders
 	SIO/Pad/PadJogcon.h
 	SIO/Pad/PadNegcon.h
 	SIO/Pad/PadPopn.h
+	SIO/Pad/PadScript.h
 	SIO/Pad/PadNotConnected.h
 	SIO/Pad/PadTypes.h
 )
@@ -937,6 +939,7 @@ set(pcsx2ps2Sources
 	ps2/Iop/Pif.cpp
 	ps2/Iop/PifBridge.cpp
 	ps2/Iop/PifDsnetm.cpp
+	ps2/Iop/PifEmup.cpp
 	ps2/Iop/ToolSif2.cpp
 	ps2/Iop/PsxBios.cpp)
 
@@ -948,7 +951,8 @@ set(pcsx2ps2Headers
 	ps2/HwInternal.h
 	ps2/Iop/IopHw_Internal.h
 	ps2/Iop/Pif.h
-	ps2/Iop/PifDsnetm.h)
+	ps2/Iop/PifDsnetm.h
+	ps2/Iop/PifEmup.h)
 
 # RDebug sources
 set(pcsx2RDebugSources

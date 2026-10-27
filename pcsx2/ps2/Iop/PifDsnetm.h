@@ -39,6 +39,9 @@ namespace Pif
 			// A TTYP flush request: drop the packets of this protocol still queued for
 			// every client (not one already being sent).
 			virtual void FlushQueued(u16 proto) = 0;
+			// An EMUP packet (PifEmup.h) from this client: the emulator answers it, not
+			// the target. Only the built-in dsnetm has this; the TOOL's bounces it.
+			virtual void Emulator(int client, Packet pkt) = 0;
 		};
 
 		static constexpr const char* VERSION = "1.2.0";

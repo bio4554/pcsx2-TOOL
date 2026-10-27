@@ -37,6 +37,9 @@ public: // Public members
 	void FullReset();
 
 	virtual Pad::ControllerType GetType() const = 0;
+	// The mode byte a poll answers with now (PadDualshock2::SendCommandByte), for dekko's pad status.
+	Pad::Mode GetMode() const { return currentMode; }
+	bool IsInConfig() const { return isInConfig; }
 	virtual const Pad::ControllerInfo& GetInfo() const = 0;
 
 	virtual void Set(u32 index, float value) = 0;

@@ -656,6 +656,9 @@
     <ClCompile Include="ps2\Iop\PifDsnetm.cpp">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClCompile>
+    <ClCompile Include="ps2\Iop\PifEmup.cpp">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClCompile>
     <ClCompile Include="ps2\Iop\ToolSif2.cpp">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClCompile>
@@ -1406,6 +1409,9 @@
     <ClCompile Include="SIO\Pad\PadDualshock2.cpp">
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClCompile>
+    <ClCompile Include="SIO\Pad\PadScript.cpp">
+      <Filter>System\Ps2\Iop\SIO\PAD</Filter>
+    </ClCompile>
     <ClCompile Include="SIO\Pad\PadGuitar.cpp">
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClCompile>
@@ -1614,6 +1620,9 @@
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="ps2\Iop\PifDsnetm.h">
+      <Filter>System\Ps2\Iop\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="ps2\Iop\PifEmup.h">
       <Filter>System\Ps2\Iop\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="CDVD\Ps1CD.h">
@@ -2338,6 +2347,9 @@
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClInclude>
     <ClInclude Include="SIO\Pad\PadDualshock2.h">
+      <Filter>System\Ps2\Iop\SIO\PAD</Filter>
+    </ClInclude>
+    <ClInclude Include="SIO\Pad\PadScript.h">
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClInclude>
     <ClInclude Include="SIO\Pad\PadGuitar.h">

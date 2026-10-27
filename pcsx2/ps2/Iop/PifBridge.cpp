@@ -12,6 +12,8 @@
 #include "IopMem.h"
 #include "ps2/Iop/Pif.h"
 #include "ps2/Iop/PifDsnetm.h"
+#include "ps2/Iop/PifEmup.h"
+#include "SIO/Pad/PadScript.h"
 #include "common/Threading.h"
 
 #include <algorithm>
@@ -274,6 +276,8 @@ namespace Pif::Bridge
 	static std::array<u8, 16> s_bootParams;
 	static std::mutex s_eventMutex;
 	static std::deque<TargetEvent> s_events;
+	// EMUP replies the CPU thread made, for these clients (s_eventMutex).
+	static std::deque<std::pair<int, std::vector<u8>>> s_emupReplies;
 
 	// A UDP socket connected to itself, so the CPU thread can wake select().
 	static socket_t s_wakeSock = BAD_SOCKET;
@@ -323,6 +327,35 @@ namespace Pif::Bridge
 			s_events.push_back(std::move(ev));
 		}
 		Wake();
+	}
+
+	static void PostEmupReply(int client, std::vector<u8> pkt)
+	{
+		{
+			std::lock_guard lock(s_eventMutex);
+			s_emupReplies.emplace_back(client, std::move(pkt));
+		}
+		Wake();
+	}
+
+	// CPU thread: an EMUP request about the VM. Runs from the CPU thread's queue,
+	// which a running VM pumps at each vsync (VMManager::Internal::PollInputOnCPUThread).
+	static std::vector<u8> AnswerOnCpu(const Emup::Request& req)
+	{
+		if (!VMManager::HasValidVM())
+			return Emup::Reply(req, Emup::RESULT_NOVM);
+		switch (req.code)
+		{
+			case Emup::CODE_PAD_STATUS:
+			{
+				const std::optional<Emup::PadRequest> pr = Emup::ParsePad(req);
+				if (!pr)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
+			}
+			default:
+				return Emup::Reply(req, Emup::RESULT_NOCODE);
+		}
 	}
 
 	static DsnetmClient* FindDsnetmClient(int id)
@@ -474,6 +507,28 @@ namespace Pif::Bridge
 				s_bootParams = boot_params;
 			}
 			Bridge::ResetTarget();
+		}
+
+		void Emulator(int client, Dsnetm::Packet pkt) override
+		{
+			std::optional<Emup::Request> req = Emup::Parse(pkt);
+			if (!req)
+			{
+				ToClient(client, Emup::BadReply());
+				return;
+			}
+			switch (req->code)
+			{
+				case Emup::CODE_VERSION:
+					ToClient(client, Emup::Reply(*req, Emup::RESULT_OK, Emup::VersionPayload()));
+					return;
+				case Emup::CODE_PAD_STATUS:
+					Host::RunOnCPUThread([client, req = std::move(*req)]() { PostEmupReply(client, AnswerOnCpu(req)); });
+					return;
+				default:
+					ToClient(client, Emup::Reply(*req, Emup::RESULT_NOCODE));
+					return;
+			}
 		}
 
 		void FlushQueued(u16 proto) override
@@ -646,10 +701,14 @@ namespace Pif::Bridge
 			// target packet then waited out select()'s 1 s timeout.
 			s_wakePending.store(false, std::memory_order_seq_cst);
 			std::deque<TargetEvent> events;
+			std::deque<std::pair<int, std::vector<u8>>> emupReplies;
 			{
 				std::lock_guard lock(s_eventMutex);
 				events.swap(s_events);
+				emupReplies.swap(s_emupReplies);
 			}
+			for (auto& [client, pkt] : emupReplies)
+				s_dsnetmOutput.ToClient(client, std::move(pkt));
 			for (TargetEvent& ev : events)
 			{
 				if (ev.pkt.empty())

@@ -31,6 +31,8 @@ namespace
 		}
 		std::array<u8, 16> bootParams = {};
 		void FlushQueued(u16 proto) override { flushed.push_back(proto); }
+		std::vector<std::pair<int, Packet>> emulator;
+		void Emulator(int client, Packet pkt) override { emulator.emplace_back(client, std::move(pkt)); }
 
 		void Clear()
 		{
@@ -251,4 +253,18 @@ TEST_F(DsnetmTest, StatusIsShortForClientsWithoutMessage)
 	ASSERT_EQ(out.toClient.size(), 2u);
 	// 4 bytes of header, then one 12-byte entry less the NUL dsnetm doesn't count.
 	EXPECT_EQ(out.toClient[1].second, Pkt(0x0400, 'H', 'H', {7, 0, 0, 0, 0x80, 0, 0x01, 0x0e, 2, 0, 0, 0, 0, 0, 0}));
+}
+
+TEST_F(DsnetmTest, EmupGoesToTheEmulatorNotTheTarget)
+{
+	SetUpSession();
+	// EMUP VERSION from a client that hasn't registered EMUP (nobody does: dsnetm answers it).
+	dsnetm.ClientOpened(2, 0);
+	const Packet version = Pkt(0xE001, 'H', 'H', {0, 0, 0, 0, 7, 0, 0, 0});
+	dsnetm.FromClient(2, version, 0);
+	ASSERT_EQ(out.emulator.size(), 1u);
+	EXPECT_EQ(out.emulator[0].first, 2);
+	EXPECT_EQ(out.emulator[0].second, version);
+	EXPECT_TRUE(out.toClient.empty());
+	EXPECT_TRUE(out.toTarget.empty());
 }
