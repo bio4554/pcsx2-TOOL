@@ -70,3 +70,22 @@ TEST(EmupTest, PadStatusLayout)
 	EXPECT_EQ(p[12], 0x80);
 	EXPECT_EQ(p.back(), 0x80 + PAD_DATA_SIZE - 1);
 }
+
+TEST(EmupTest, PadSetCarriesThePadThenTheDataBytes)
+{
+	std::vector<u8> body = {CODE_PAD_SET, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0};
+	for (size_t i = 0; i < PAD_DATA_SIZE; i++)
+		body.push_back(static_cast<u8>(0x40 + i));
+	auto req = *Parse(Pkt(body));
+	const auto set = ParsePadSet(req);
+	ASSERT_TRUE(set);
+	EXPECT_EQ(set->pad.port, 1);
+	EXPECT_EQ(set->data[0], 0x40);
+	EXPECT_EQ(set->data[PAD_DATA_SIZE - 1], 0x40 + PAD_DATA_SIZE - 1);
+	req.payload.pop_back();
+	EXPECT_FALSE(ParsePadSet(req));
+	req.payload = {2, 0, 0, 0};
+	req.payload.resize(4 + PAD_DATA_SIZE);
+	EXPECT_FALSE(ParsePadSet(req));
+	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_SETR, RESULT_NOPAD, 0, 0, 5, 0, 0, 0}));
+}

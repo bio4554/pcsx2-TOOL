@@ -3,6 +3,8 @@
 
 #include "ps2/Iop/PifEmup.h"
 
+#include <algorithm>
+
 namespace Pif::Emup
 {
 	namespace
@@ -73,6 +75,16 @@ namespace Pif::Emup
 		if (req.payload.size() < 4 || req.payload[0] > 1 || req.payload[1] != 0)
 			return std::nullopt;
 		return PadRequest{req.payload[0], req.payload[1]};
+	}
+
+	std::optional<PadSet> ParsePadSet(const Request& req)
+	{
+		const std::optional<PadRequest> pad = ParsePad(req);
+		if (!pad || req.payload.size() < 4 + PAD_DATA_SIZE)
+			return std::nullopt;
+		PadSet set{*pad, {}};
+		std::copy_n(req.payload.begin() + 4, PAD_DATA_SIZE, set.data.begin());
+		return set;
 	}
 
 	std::vector<u8> PadStatusPayload(const PadStatus& s)

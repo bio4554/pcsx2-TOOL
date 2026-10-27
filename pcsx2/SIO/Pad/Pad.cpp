@@ -10,6 +10,7 @@
 #include "SIO/Pad/PadNegcon.h"
 #include "SIO/Pad/PadPopn.h"
 #include "SIO/Pad/PadNotConnected.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 
 #include "Input/SDLInputSource.h"
@@ -552,7 +553,8 @@ PadBase* Pad::GetPad(const u8 unifiedSlot)
 
 void Pad::SetControllerState(u32 controller, u32 bind, float value)
 {
-	if (controller >= NUM_CONTROLLER_PORTS)
+	// A pad a host tool has set (PadScript) takes none of the host's input.
+	if (controller >= NUM_CONTROLLER_PORTS || PadScript::Owns(controller))
 		return;
 
 	s_controllers[controller]->Set(bind, value);
@@ -560,7 +562,7 @@ void Pad::SetControllerState(u32 controller, u32 bind, float value)
 
 void Pad::ResetControllerInputs(u32 controller)
 {
-	if (controller >= NUM_CONTROLLER_PORTS || !HasConnectedPad(controller))
+	if (controller >= NUM_CONTROLLER_PORTS || !HasConnectedPad(controller) || PadScript::Owns(controller))
 		return;
 
 	for (InputBindingInfo binding : s_controllers[controller]->GetInfo().bindings)
@@ -762,6 +764,9 @@ void Pad::SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool sta
 
 void Pad::ApplyMacroButton(u32 controller, const Pad::MacroButton& mb)
 {
+	if (PadScript::Owns(controller))
+		return;
+
 	const float value = mb.toggle_state ? mb.pressure : 0.0f;
 	PadBase* const pad = Pad::GetPad(controller);
 

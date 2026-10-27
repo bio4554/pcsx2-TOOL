@@ -32,6 +32,10 @@ namespace Pif::Emup
 		CODE_VERSIONR = 0x01,
 		CODE_PAD_STATUS = 0x10,
 		CODE_PAD_STATUSR = 0x11,
+		CODE_PAD_SET = 0x12,
+		CODE_PAD_SETR = 0x13,
+		CODE_PAD_DETACH = 0x14,
+		CODE_PAD_DETACHR = 0x15,
 		CODE_BAD = 0xff, // the reply to a body too short to have a code and id
 	};
 
@@ -41,11 +45,13 @@ namespace Pif::Emup
 		RESULT_INVAL = 1, // a payload too short, or a value out of range
 		RESULT_NOCODE = 2, // a code this build doesn't know
 		RESULT_NOVM = 3, // nothing is running to ask
+		RESULT_NOPAD = 4, // the port has no pad the request can drive (PAD_SET: a DualShock 2)
 	};
 
 	// VERSIONR's feature bits: what this build answers.
 	constexpr u32 FEATURE_PAD_STATUS = 1u << 0;
-	constexpr u32 FEATURES = FEATURE_PAD_STATUS;
+	constexpr u32 FEATURE_PAD_SET = 1u << 1; // PAD_SET and PAD_DETACH
+	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET;
 
 	struct Request
 	{
@@ -65,7 +71,8 @@ namespace Pif::Emup
 
 	std::vector<u8> VersionPayload();
 
-	// PAD_STATUS asks with u8 port (0: port 1), u8 slot (0, no multitap), u16 0.
+	// PAD_STATUS and PAD_DETACH ask with u8 port (0: port 1), u8 slot (0, no
+	// multitap), u16 0. PAD_DETACH hands the pad back to the host's input.
 	struct PadRequest
 	{
 		u8 port;
@@ -83,6 +90,7 @@ namespace Pif::Emup
 	enum PadOwner : u8
 	{
 		OWNER_HOST = 0, // the window's keyboard and host controllers
+		OWNER_EMUP = 1, // a host tool, over EMUP (PAD_SET)
 	};
 	enum PadFlags : u8
 	{
@@ -109,4 +117,16 @@ namespace Pif::Emup
 		std::array<u8, PAD_DATA_SIZE> data = {};
 	};
 	std::vector<u8> PadStatusPayload(const PadStatus& s);
+
+	// PAD_SET asks with a PadRequest, then the 18 data bytes the pad is to send
+	// from now on (PadStatus::data's layout; a pressure goes out only while its
+	// button is down). The pad is then the tool's: the host's input to that port
+	// is dropped until PAD_DETACH. PAD_SETR and PAD_DETACHR carry the PadStatus
+	// after the change.
+	struct PadSet
+	{
+		PadRequest pad;
+		std::array<u8, PAD_DATA_SIZE> data;
+	};
+	std::optional<PadSet> ParsePadSet(const Request& req);
 } // namespace Pif::Emup

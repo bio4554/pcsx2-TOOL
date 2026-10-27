@@ -34,6 +34,7 @@
 #include "Recording/InputRecordingControls.h"
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SIO/Sio0.h"
 #include "SIO/Sio2.h"
@@ -3008,6 +3009,8 @@ void VMManager::Internal::PollInputOnCPUThread()
 {
 	Host::PumpMessagesOnCPUThread();
 	InputManager::PollSources();
+	// A pad a host tool has set over EMUP holds the tool's state, whatever the host did.
+	PadScript::Apply();
 
 	if (EmuConfig.EnableRecordingTools)
 	{
