@@ -21,6 +21,11 @@ namespace Pif::Emup
 				p.push_back(static_cast<u8>(v >> (i * 8)));
 		}
 
+		u32 Get32(const std::vector<u8>& p, size_t off)
+		{
+			return p[off] | (p[off + 1] << 8) | (p[off + 2] << 16) | (static_cast<u32>(p[off + 3]) << 24);
+		}
+
 		std::vector<u8> Make(u8 code, u8 result, u32 id, const std::vector<u8>& payload)
 		{
 			std::vector<u8> p(8);
@@ -93,6 +98,31 @@ namespace Pif::Emup
 		Put16(p, 0);
 		Put32(p, s.vsync);
 		p.insert(p.end(), s.data.begin(), s.data.end());
+		p.push_back(s.play.state);
+		p.push_back(0);
+		Put16(p, 0);
+		for (const u32 v : {s.play.start, s.play.frame, s.play.entries, s.play.next, s.play.last})
+			Put32(p, v);
 		return p;
+	}
+
+	std::optional<PadPlayPart> ParsePadPlay(const Request& req)
+	{
+		const std::optional<PadRequest> pad = ParsePad(req);
+		if (!pad || req.payload.size() < 8)
+			return std::nullopt;
+		const std::vector<u8>& p = req.payload;
+		const u32 count = Get32(p, 4);
+		if (count > PLAY_MAX_ENTRIES || p.size() != 8 + count * PLAY_ENTRY_SIZE)
+			return std::nullopt;
+		PadPlayPart part{*pad, p[2], {}};
+		part.entries.reserve(count);
+		for (size_t off = 8; off < p.size(); off += PLAY_ENTRY_SIZE)
+		{
+			PlayEntry e{Get32(p, off), {}};
+			std::copy_n(p.begin() + off + 4, PAD_DATA_SIZE, e.data.begin());
+			part.entries.push_back(e);
+		}
+		return part;
 	}
 } // namespace Pif::Emup

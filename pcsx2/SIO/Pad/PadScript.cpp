@@ -12,6 +12,7 @@
 #include <iterator>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace PadScript
 {
@@ -42,8 +43,24 @@ namespace PadScript
 			{11, PadDualshock2::Inputs::PAD_START},
 		};
 
-		// The tool's pads, by port (slot 0 only): the data bytes they send.
-		std::optional<std::array<u8, Pif::Emup::PAD_DATA_SIZE>> s_owned[2];
+		using Data = std::array<u8, Pif::Emup::PAD_DATA_SIZE>;
+
+		// A pad with nothing down and the sticks centred.
+		constexpr Data s_released = {0xff, 0xff, 0x7f, 0x7f, 0x7f, 0x7f};
+
+		struct Script
+		{
+			u8 state = Pif::Emup::PLAY_NONE;
+			std::vector<Pif::Emup::PlayEntry> entries;
+			size_t next = 0;
+			u32 frame = 0;
+			u32 start = 0;
+		};
+
+		// The tool's pads, by port (slot 0 only): the data bytes they send, and
+		// their play.
+		std::optional<Data> s_owned[2];
+		Script s_play[2];
 
 		PadDualshock2* Dualshock2(u8 port)
 		{
@@ -53,7 +70,7 @@ namespace PadScript
 
 		// The data bytes into the pad, past the deadzone, scale and pressure
 		// modifier that host input goes through (input recording's way in).
-		void Write(PadDualshock2* pad, const std::array<u8, Pif::Emup::PAD_DATA_SIZE>& data)
+		void Write(PadDualshock2* pad, const Data& data)
 		{
 			const u32 buttons = (data[0] << 8) | data[1];
 			for (size_t i = 0; i < std::size(s_pressures); i++)
@@ -71,6 +88,30 @@ namespace PadScript
 			pad->SetRawPressureButton(PadDualshock2::Inputs::PAD_PRESSURE, {false, 0});
 			pad->SetRawAnalogs({data[4], data[5]}, {data[2], data[3]});
 		}
+
+		// One vsync of a play: the frame it is now, and the entries due by then.
+		void Advance(Script& play, Data& data)
+		{
+			using namespace Pif::Emup;
+			if (play.state == PLAY_ARMED)
+			{
+				play.state = PLAY_PLAYING;
+				play.start = g_FrameCount;
+				play.frame = 0;
+			}
+			else if (play.state == PLAY_PLAYING || play.state == PLAY_DONE)
+			{
+				play.frame++;
+			}
+			else
+			{
+				return;
+			}
+			while (play.next < play.entries.size() && play.entries[play.next].frame <= play.frame)
+				data = play.entries[play.next++].data;
+			if (play.next == play.entries.size())
+				play.state = PLAY_DONE;
+		}
 	} // namespace
 
 	Pif::Emup::PadStatus Status(u8 port, u8 slot)
@@ -81,6 +122,16 @@ namespace PadScript
 		s.slot = slot;
 		s.owner = port < std::size(s_owned) && slot == 0 && s_owned[port] ? OWNER_EMUP : OWNER_HOST;
 		s.vsync = g_FrameCount;
+		if (port < std::size(s_play) && slot == 0)
+		{
+			const Script& play = s_play[port];
+			s.play.state = play.state;
+			s.play.start = play.start;
+			s.play.frame = play.frame;
+			s.play.entries = static_cast<u32>(play.entries.size());
+			s.play.next = static_cast<u32>(play.next);
+			s.play.last = play.entries.empty() ? 0 : play.entries.back().frame;
+		}
 
 		PadBase* pad = Pad::GetPad(port, slot);
 		if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
@@ -113,19 +164,70 @@ namespace PadScript
 		return s;
 	}
 
-	Pif::Emup::Result Set(u8 port, u8 slot, const std::array<u8, Pif::Emup::PAD_DATA_SIZE>& data)
+	Pif::Emup::Result Set(u8 port, u8 slot, const Data& data)
 	{
 		PadDualshock2* pad = port < std::size(s_owned) && slot == 0 ? Dualshock2(port) : nullptr;
 		if (!pad)
 			return Pif::Emup::RESULT_NOPAD;
+		s_play[port] = {};
 		s_owned[port] = data;
 		Write(pad, data);
 		return Pif::Emup::RESULT_OK;
 	}
 
+	Pif::Emup::Result Play(const Pif::Emup::PadPlayPart& part)
+	{
+		using namespace Pif::Emup;
+		const u8 port = part.pad.port;
+		if (port >= std::size(s_play) || part.pad.slot != 0 || !Dualshock2(port))
+			return RESULT_NOPAD;
+		Script& play = s_play[port];
+		const bool first = part.flags & PLAY_FIRST;
+		if (!first && play.state != PLAY_LOADING)
+			return RESULT_INVAL; // a later part with no play begun
+		const size_t loaded = first ? 0 : play.entries.size();
+		if (loaded + part.entries.size() > PLAY_MAX_ENTRIES)
+			return RESULT_INVAL;
+		std::optional<u32> prev;
+		if (loaded > 0)
+			prev = play.entries.back().frame;
+		for (const PlayEntry& e : part.entries)
+		{
+			if (prev && e.frame <= *prev)
+				return RESULT_INVAL;
+			prev = e.frame;
+		}
+		if ((part.flags & PLAY_START) && loaded == 0 && part.entries.empty())
+			return RESULT_INVAL; // nothing to play
+
+		// A new play leaves the pad alone until it starts.
+		if (first)
+			play = {PLAY_LOADING};
+		play.entries.insert(play.entries.end(), part.entries.begin(), part.entries.end());
+		if (part.flags & PLAY_START)
+		{
+			// Frame 0 is the next Apply: this request ran from the CPU thread's
+			// queue, which Host::PumpMessagesOnCPUThread empties just before it in
+			// the same vsync (or before the first vsync after a pause).
+			play.state = PLAY_ARMED;
+			s_owned[port] = s_released;
+			Write(Dualshock2(port), s_released);
+		}
+		return RESULT_OK;
+	}
+
+	void Stop(u8 port, u8 slot)
+	{
+		if (port < std::size(s_play) && slot == 0)
+			s_play[port] = {};
+	}
+
 	void Detach(u8 port, u8 slot)
 	{
-		if (port >= std::size(s_owned) || slot != 0 || !s_owned[port])
+		if (port >= std::size(s_owned) || slot != 0)
+			return;
+		s_play[port] = {};
+		if (!s_owned[port])
 			return;
 		s_owned[port].reset();
 		Pad::ResetControllerInputs(sioConvertPortAndSlotToPad(port, 0));
@@ -143,6 +245,7 @@ namespace PadScript
 		{
 			if (!s_owned[port])
 				continue;
+			Advance(s_play[port], *s_owned[port]);
 			if (PadDualshock2* pad = Dualshock2(port))
 				Write(pad, *s_owned[port]);
 		}

@@ -63,12 +63,15 @@ TEST(EmupTest, PadStatusLayout)
 	s.vsync = 0x01020304;
 	for (size_t i = 0; i < s.data.size(); i++)
 		s.data[i] = static_cast<u8>(0x80 + i);
+	s.play = {PLAY_PLAYING, 0x100, 7, 3, 2, 0x20};
 	const auto p = PadStatusPayload(s);
-	ASSERT_EQ(p.size(), 12 + PAD_DATA_SIZE);
+	ASSERT_EQ(p.size(), 12 + PAD_DATA_SIZE + 24);
 	EXPECT_EQ((std::vector<u8>(p.begin(), p.begin() + 12)),
 		(std::vector<u8>{1, 0, PAD_DUALSHOCK2, OWNER_HOST, 0x79, 3, 0, 0, 4, 3, 2, 1}));
 	EXPECT_EQ(p[12], 0x80);
-	EXPECT_EQ(p.back(), 0x80 + PAD_DATA_SIZE - 1);
+	EXPECT_EQ(p[12 + PAD_DATA_SIZE - 1], 0x80 + PAD_DATA_SIZE - 1);
+	EXPECT_EQ((std::vector<u8>(p.begin() + 12 + PAD_DATA_SIZE, p.end())),
+		(std::vector<u8>{PLAY_PLAYING, 0, 0, 0, 0, 1, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0x20, 0, 0, 0}));
 }
 
 TEST(EmupTest, PadSetCarriesThePadThenTheDataBytes)
@@ -88,4 +91,33 @@ TEST(EmupTest, PadSetCarriesThePadThenTheDataBytes)
 	req.payload.resize(4 + PAD_DATA_SIZE);
 	EXPECT_FALSE(ParsePadSet(req));
 	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_SETR, RESULT_NOPAD, 0, 0, 5, 0, 0, 0}));
+}
+
+TEST(EmupTest, PadPlayCarriesItsEntriesByCount)
+{
+	std::vector<u8> body = {CODE_PAD_PLAY, 0, 0, 0, 6, 0, 0, 0, 0, 0, PLAY_FIRST | PLAY_START, 0, 2, 0, 0, 0};
+	for (const u32 frame : {0u, 0x01020304u})
+	{
+		for (int i = 0; i < 4; i++)
+			body.push_back(static_cast<u8>(frame >> (i * 8)));
+		for (size_t i = 0; i < PAD_DATA_SIZE; i++)
+			body.push_back(static_cast<u8>(frame + i));
+		body.push_back(0);
+		body.push_back(0);
+	}
+	auto req = *Parse(Pkt(body));
+	const auto part = ParsePadPlay(req);
+	ASSERT_TRUE(part);
+	EXPECT_EQ(part->pad.port, 0);
+	EXPECT_EQ(part->flags, PLAY_FIRST | PLAY_START);
+	ASSERT_EQ(part->entries.size(), 2u);
+	EXPECT_EQ(part->entries[0].frame, 0u);
+	EXPECT_EQ(part->entries[1].frame, 0x01020304u);
+	EXPECT_EQ(part->entries[1].data[0], 0x04);
+	EXPECT_EQ(part->entries[1].data[PAD_DATA_SIZE - 1], static_cast<u8>(0x04 + PAD_DATA_SIZE - 1));
+	req.payload.pop_back(); // a count that doesn't match the entries
+	EXPECT_FALSE(ParsePadPlay(req));
+	req.payload = {0, 0, PLAY_START, 0, 0, 0, 0, 0};
+	ASSERT_TRUE(ParsePadPlay(req));
+	EXPECT_TRUE(ParsePadPlay(req)->entries.empty());
 }

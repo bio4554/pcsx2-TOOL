@@ -21,10 +21,19 @@ namespace PadScript
 	Pif::Emup::PadStatus Status(u8 port, u8 slot);
 
 	// Takes the pad and has it send these data bytes (PadStatus::data's layout)
-	// from now on; RESULT_NOPAD if the port has no DualShock 2.
+	// from now on, ending a play; RESULT_NOPAD if the port has no DualShock 2.
 	Pif::Emup::Result Set(u8 port, u8 slot, const std::array<u8, Pif::Emup::PAD_DATA_SIZE>& data);
 	// Hands the pad back to the host: released, until the host's next input.
+	// Ends a play.
 	void Detach(u8 port, u8 slot);
+
+	// A part of a play (PAD_PLAY): loads it, and the last part starts it, frame
+	// 0 at the next Apply. Frames count vsyncs, so a play keeps to the program's
+	// time whatever the host's speed. RESULT_NOPAD if the port has no DualShock
+	// 2, RESULT_INVAL for a part out of order. Set and Detach end a play.
+	Pif::Emup::Result Play(const Pif::Emup::PadPlayPart& part);
+	// Ends a play; the pad holds what it sends now, and stays the tool's.
+	void Stop(u8 port, u8 slot);
 
 	// Whether the tool has this pad (Pad's unified slot numbering).
 	bool Owns(u32 unifiedSlot);

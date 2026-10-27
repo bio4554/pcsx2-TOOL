@@ -371,6 +371,24 @@ namespace Pif::Bridge
 				PadScript::Detach(pr->port, pr->slot);
 				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
 			}
+			case Emup::CODE_PAD_PLAY:
+			{
+				const std::optional<Emup::PadPlayPart> part = Emup::ParsePadPlay(req);
+				if (!part)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				const Emup::Result r = PadScript::Play(*part);
+				if (r != Emup::RESULT_OK)
+					return Emup::Reply(req, r);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(part->pad.port, part->pad.slot)));
+			}
+			case Emup::CODE_PAD_STOP:
+			{
+				const std::optional<Emup::PadRequest> pr = Emup::ParsePad(req);
+				if (!pr)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				PadScript::Stop(pr->port, pr->slot);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
+			}
 			default:
 				return Emup::Reply(req, Emup::RESULT_NOCODE);
 		}
@@ -543,6 +561,8 @@ namespace Pif::Bridge
 				case Emup::CODE_PAD_STATUS:
 				case Emup::CODE_PAD_SET:
 				case Emup::CODE_PAD_DETACH:
+				case Emup::CODE_PAD_PLAY:
+				case Emup::CODE_PAD_STOP:
 					Host::RunOnCPUThread([client, req = std::move(*req)]() { PostEmupReply(client, AnswerOnCpu(req)); });
 					return;
 				default:

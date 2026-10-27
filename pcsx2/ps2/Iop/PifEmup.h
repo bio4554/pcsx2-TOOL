@@ -36,6 +36,10 @@ namespace Pif::Emup
 		CODE_PAD_SETR = 0x13,
 		CODE_PAD_DETACH = 0x14,
 		CODE_PAD_DETACHR = 0x15,
+		CODE_PAD_PLAY = 0x16,
+		CODE_PAD_PLAYR = 0x17,
+		CODE_PAD_STOP = 0x18,
+		CODE_PAD_STOPR = 0x19,
 		CODE_BAD = 0xff, // the reply to a body too short to have a code and id
 	};
 
@@ -51,7 +55,8 @@ namespace Pif::Emup
 	// VERSIONR's feature bits: what this build answers.
 	constexpr u32 FEATURE_PAD_STATUS = 1u << 0;
 	constexpr u32 FEATURE_PAD_SET = 1u << 1; // PAD_SET and PAD_DETACH
-	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET;
+	constexpr u32 FEATURE_PAD_PLAY = 1u << 2; // PAD_PLAY and PAD_STOP, and PAD_STATUSR's play fields
+	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET | FEATURE_PAD_PLAY;
 
 	struct Request
 	{
@@ -101,6 +106,26 @@ namespace Pif::Emup
 	};
 	constexpr size_t PAD_DATA_SIZE = 18;
 
+	// Where a pad's play (PAD_PLAY) is.
+	enum PlayState : u8
+	{
+		PLAY_NONE = 0,
+		PLAY_LOADING = 1, // parts sent, not started
+		PLAY_ARMED = 2, // started: frame 0 is the next vsync
+		PLAY_PLAYING = 3,
+		PLAY_DONE = 4, // past its last entry, which the pad holds
+	};
+
+	struct PadPlay
+	{
+		u8 state = PLAY_NONE;
+		u32 start = 0; // the vsync count (PadStatus::vsync) at frame 0
+		u32 frame = 0; // the frame now applied: vsyncs since frame 0
+		u32 entries = 0; // loaded
+		u32 next = 0; // entries applied so far
+		u32 last = 0; // the last entry's frame
+	};
+
 	struct PadStatus
 	{
 		u8 port = 0;
@@ -115,6 +140,7 @@ namespace Pif::Emup
 		// left, up, down, triangle, circle, cross, square, L1, R1, L2, R2). Which of
 		// them a poll sends depends on the mode (id).
 		std::array<u8, PAD_DATA_SIZE> data = {};
+		PadPlay play; // after the data bytes: u8 state, u8 0, u16 0, then the five u32s
 	};
 	std::vector<u8> PadStatusPayload(const PadStatus& s);
 
@@ -129,4 +155,33 @@ namespace Pif::Emup
 		std::array<u8, PAD_DATA_SIZE> data;
 	};
 	std::optional<PadSet> ParsePadSet(const Request& req);
+
+	// PAD_PLAY loads a play in parts, then starts it: u8 port, u8 slot, u8
+	// flags, u8 0, u32 count, then count entries of u32 frame, the 18 data bytes
+	// and u16 0. Frames rise strictly, across parts too. PLAY_FIRST begins a new
+	// play (dropping one loaded but not started); PLAY_START marks the last part:
+	// frame 0 is the first vsync after it. Until its first entry the pad is
+	// released; after its last, the pad holds that entry. The pad is the tool's
+	// from the start, as with PAD_SET. PAD_PLAYR carries the PadStatus.
+	//
+	// PAD_STOP (a PadRequest) ends a play, loaded or playing; the pad holds what
+	// it sends now and stays the tool's. PAD_STOPR carries the PadStatus.
+	constexpr u8 PLAY_FIRST = 1 << 0;
+	constexpr u8 PLAY_START = 1 << 1;
+	constexpr size_t PLAY_ENTRY_SIZE = 24;
+	constexpr size_t PLAY_MAX_ENTRIES = 1u << 20; // a play's limit, over all its parts
+
+	struct PlayEntry
+	{
+		u32 frame;
+		std::array<u8, PAD_DATA_SIZE> data;
+	};
+	struct PadPlayPart
+	{
+		PadRequest pad;
+		u8 flags;
+		std::vector<PlayEntry> entries;
+	};
+	// nullopt if the payload's count doesn't match its length.
+	std::optional<PadPlayPart> ParsePadPlay(const Request& req);
 } // namespace Pif::Emup
