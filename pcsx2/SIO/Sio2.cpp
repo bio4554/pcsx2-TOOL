@@ -187,6 +187,14 @@ void Sio2::Pad()
 		}
 	}
 
+	// A pad that didn't acknowledge the command ends the transfer as a missing one
+	// does: what libpad2's ds2u.irx checks to find a digital pad. Needs proper
+	// testing against real SIO2 status for a short answer.
+	if (pad->IsSilent())
+	{
+		this->CmdStat |= port ? CmdStat::PORT_2_MISSING : CmdStat::PORT_1_MISSING;
+	}
+
 	// If the pad is "ejected", then decrement one tick.
 	// This needs to happen AFTER anything else which might
 	// consider if the pad is "ejected"!

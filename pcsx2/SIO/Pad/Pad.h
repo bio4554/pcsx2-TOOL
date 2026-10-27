@@ -68,6 +68,11 @@ namespace Pad
 	void Unplug(u8 unifiedSlot);
 	void Plug(u8 unifiedSlot);
 	bool IsUnplugged(u8 unifiedSlot);
+	// The model a DualShock 2 port's pads present from the next one made (a
+	// plug, a settings change); a pad in the port keeps its own. Until the VM
+	// shuts down.
+	void SetModel(u8 unifiedSlot, DualShockModel model);
+	DualShockModel GetModel(u8 unifiedSlot);
 
 	PadBase* GetPad(u8 port, u8 slot);
 	PadBase* GetPad(const u8 unifiedSlot);

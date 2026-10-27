@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "SIO/Pad/PadTypes.h"
 #include "ps2/Iop/PifEmup.h"
 
 // The pads as a host tool sees and drives them over EMUP (crusade TR-32, dekko's
@@ -44,6 +45,10 @@ namespace PadScript
 	// Presses and releases the analog button (PAD_ANALOG); RESULT_NOPAD with no
 	// DualShock 2 in the port.
 	Pif::Emup::Result Analog(u8 port, u8 slot);
+	// The pad a DualShock 2 port presents (PAD_TYPE): a pad in the port is
+	// swapped, out now and the new one in PAD_TYPE_SWAP_VSYNCS later (Apply).
+	// RESULT_NOPAD unless the settings give the port a DualShock 2.
+	Pif::Emup::Result Type(u8 port, u8 slot, Pad::DualShockModel model);
 
 	// Whether the tool has this pad (Pad's unified slot numbering).
 	bool Owns(u32 unifiedSlot);

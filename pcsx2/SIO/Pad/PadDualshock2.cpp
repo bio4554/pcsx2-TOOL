@@ -210,7 +210,13 @@ u8 PadDualshock2::ButtonQuery(u8 commandByte)
 
 u8 PadDualshock2::Poll(u8 commandByte)
 {
-	const u32 buttons = GetButtons();
+	// A digital pad has nothing past its buttons; the line idles high.
+	if (this->model == Pad::DualShockModel::Digital && commandBytesReceived > 4)
+	{
+		return 0xff;
+	}
+
+	const u32 buttons = GetPolledButtons();
 	u8 largeMotor = 0x00;
 	u8 smallMotor = 0x00;
 
@@ -385,7 +391,7 @@ u8 PadDualshock2::StatusInfo(u8 commandByte)
 	switch (commandBytesReceived)
 	{
 		case 3:
-			return static_cast<u8>(Pad::PhysicalType::STANDARD);
+			return static_cast<u8>(this->model == Pad::DualShockModel::DualShock ? Pad::PhysicalType::DUALSHOCK : Pad::PhysicalType::STANDARD);
 		case 4:
 			return 0x02;
 		case 5:
@@ -564,6 +570,12 @@ const Pad::ControllerInfo& PadDualshock2::GetInfo() const
 void PadDualshock2::Set(u32 index, float value)
 {
 	if (index >= Inputs::LENGTH)
+	{
+		return;
+	}
+
+	// A digital pad has no analog button.
+	if (index == Inputs::PAD_ANALOG && this->model == Pad::DualShockModel::Digital)
 	{
 		return;
 	}
@@ -879,6 +891,25 @@ u32 PadDualshock2::GetButtons() const
 	return buttons;
 }
 
+u32 PadDualshock2::GetPolledButtons() const
+{
+	// L3 and R3 (bitmaskMapping) read as released.
+	return this->model == Pad::DualShockModel::Digital ? (buttons | (1u << 9) | (1u << 10)) : buttons;
+}
+
+bool PadDualshock2::Answers(Pad::Command command) const
+{
+	switch (this->model)
+	{
+		case Pad::DualShockModel::Digital:
+			return command == Pad::Command::POLL;
+		case Pad::DualShockModel::DualShock:
+			return command != Pad::Command::MYSTERY && command != Pad::Command::BUTTON_QUERY && command != Pad::Command::RESPONSE_BYTES;
+		default:
+			return true;
+	}
+}
+
 u8 PadDualshock2::GetPressure(u32 index) const
 {
 	switch (index)
@@ -931,6 +962,13 @@ u8 PadDualshock2::SendCommandByte(u8 commandByte)
 {
 	u8 ret = 0;
 
+	// Past a command it didn't acknowledge, the pad sends nothing.
+	if (this->silent)
+	{
+		this->commandBytesReceived++;
+		return 0xff;
+	}
+
 	switch (this->commandBytesReceived)
 	{
 		case 0:
@@ -945,6 +983,14 @@ u8 PadDualshock2::SendCommandByte(u8 commandByte)
 			}
 
 			ret = this->isInConfig ? static_cast<u8>(Pad::Mode::CONFIG) : static_cast<u8>(this->currentMode);
+
+			// The pad sends its ID with the command byte, then doesn't acknowledge a
+			// command this model doesn't have.
+			if (!Answers(this->currentCommand))
+			{
+				this->silent = true;
+				g_Sio0.SetAcknowledge(false);
+			}
 			break;
 		case 2:
 			ret = 0x5a;

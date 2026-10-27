@@ -100,10 +100,17 @@ namespace Pif::Emup
 		return PadPlug{*pad, req.payload[2] != 0};
 	}
 
+	std::optional<PadTypeRequest> ParsePadType(const Request& req)
+	{
+		const std::optional<PadRequest> pad = ParsePad(req);
+		if (!pad || req.payload[2] > MODEL_DIGITAL)
+			return std::nullopt;
+		return PadTypeRequest{*pad, req.payload[2]};
+	}
+
 	std::vector<u8> PadStatusPayload(const PadStatus& s)
 	{
-		std::vector<u8> p = {s.port, s.slot, s.type, s.owner, s.id, s.flags};
-		Put16(p, 0);
+		std::vector<u8> p = {s.port, s.slot, s.type, s.owner, s.id, s.flags, s.model, 0};
 		Put32(p, s.vsync);
 		p.insert(p.end(), s.data.begin(), s.data.end());
 		p.push_back(s.play.state);

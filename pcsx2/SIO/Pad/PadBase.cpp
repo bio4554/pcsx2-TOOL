@@ -14,6 +14,7 @@ PadBase::~PadBase() = default;
 void PadBase::SoftReset()
 {
 	commandBytesReceived = 1;
+	silent = false;
 }
 
 void PadBase::FullReset()

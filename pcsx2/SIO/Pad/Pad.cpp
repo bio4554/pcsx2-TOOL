@@ -60,6 +60,8 @@ namespace Pad
 	static std::array<std::unique_ptr<PadBase>, NUM_CONTROLLER_PORTS> s_controllers;
 	// The ports a host tool has unplugged (Unplug).
 	static std::array<bool, NUM_CONTROLLER_PORTS> s_unplugged;
+	// The model each port's DualShock 2 presents (SetModel).
+	static std::array<DualShockModel, NUM_CONTROLLER_PORTS> s_models;
 
 	bool mtapPort0LastState;
 	bool mtapPort1LastState;
@@ -75,6 +77,7 @@ void Pad::Shutdown()
 	for (auto& port : s_controllers)
 		port.reset();
 	s_unplugged = {};
+	s_models = {};
 }
 
 const char* Pad::ControllerInfo::GetLocalizedName() const
@@ -526,8 +529,12 @@ PadBase* Pad::CreatePad(u8 unifiedSlot, ControllerType controllerType, size_t ej
 	switch (controllerType)
 	{
 		case ControllerType::DualShock2:
-			s_controllers[unifiedSlot] = std::make_unique<PadDualshock2>(unifiedSlot, ejectTicks);
+		{
+			auto pad = std::make_unique<PadDualshock2>(unifiedSlot, ejectTicks);
+			pad->SetModel(s_models[unifiedSlot]);
+			s_controllers[unifiedSlot] = std::move(pad);
 			break;
+		}
 		case ControllerType::Guitar:
 			s_controllers[unifiedSlot] = std::make_unique<PadGuitar>(unifiedSlot, ejectTicks);
 			break;
@@ -578,6 +585,17 @@ void Pad::Plug(u8 unifiedSlot)
 bool Pad::IsUnplugged(u8 unifiedSlot)
 {
 	return unifiedSlot < NUM_CONTROLLER_PORTS && s_unplugged[unifiedSlot];
+}
+
+void Pad::SetModel(u8 unifiedSlot, DualShockModel model)
+{
+	if (unifiedSlot < NUM_CONTROLLER_PORTS)
+		s_models[unifiedSlot] = model;
+}
+
+Pad::DualShockModel Pad::GetModel(u8 unifiedSlot)
+{
+	return unifiedSlot < NUM_CONTROLLER_PORTS ? s_models[unifiedSlot] : DualShockModel::DualShock2;
 }
 
 PadBase* Pad::GetPad(u8 port, u8 slot)

@@ -47,7 +47,22 @@ namespace Pad
 	{
 		NOT_SET = 0x00,
 		GUITAR = 0x01,
+		DUALSHOCK = 0x01, // the first DualShock too: ds2u.irx asks for pressures only with bit 1 set (needs a real pad to confirm)
 		STANDARD = 0x03
+	};
+
+	// Which pad a DualShock 2 port presents (crusade TR-32, dekko's `pad type`).
+	// libpad2's ds2u.irx tells them apart by how they answer: a digital pad
+	// answers only polls (0x42), so its config command fails and ds2u polls it as
+	// it is (ID 0x41, no L3/R3); a DualShock has config mode but says so in 0x45
+	// (PhysicalType::DUALSHOCK) and answers none of the pressure commands (0x40,
+	// 0x41, 0x4f). Needs proper testing against the real pads (SCPH-1080,
+	// SCPH-1200).
+	enum class DualShockModel : u8
+	{
+		DualShock2,
+		DualShock,
+		Digital,
 	};
 
 	enum class ResponseBytes : u32

@@ -409,6 +409,16 @@ namespace Pif::Bridge
 					return Emup::Reply(req, r);
 				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(pr->port, pr->slot)));
 			}
+			case Emup::CODE_PAD_TYPE:
+			{
+				const std::optional<Emup::PadTypeRequest> type = Emup::ParsePadType(req);
+				if (!type)
+					return Emup::Reply(req, Emup::RESULT_INVAL);
+				const Emup::Result r = PadScript::Type(type->pad.port, type->pad.slot, static_cast<Pad::DualShockModel>(type->model));
+				if (r != Emup::RESULT_OK)
+					return Emup::Reply(req, r);
+				return Emup::Reply(req, Emup::RESULT_OK, Emup::PadStatusPayload(PadScript::Status(type->pad.port, type->pad.slot)));
+			}
 			default:
 				return Emup::Reply(req, Emup::RESULT_NOCODE);
 		}
@@ -585,6 +595,7 @@ namespace Pif::Bridge
 				case Emup::CODE_PAD_STOP:
 				case Emup::CODE_PAD_PLUG:
 				case Emup::CODE_PAD_ANALOG:
+				case Emup::CODE_PAD_TYPE:
 					Host::RunOnCPUThread([client, req = std::move(*req)]() { PostEmupReply(client, AnswerOnCpu(req)); });
 					return;
 				default:

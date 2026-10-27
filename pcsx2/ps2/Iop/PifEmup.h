@@ -44,6 +44,8 @@ namespace Pif::Emup
 		CODE_PAD_PLUGR = 0x1b,
 		CODE_PAD_ANALOG = 0x1c,
 		CODE_PAD_ANALOGR = 0x1d,
+		CODE_PAD_TYPE = 0x1e,
+		CODE_PAD_TYPER = 0x1f,
 		CODE_BAD = 0xff, // the reply to a body too short to have a code and id
 	};
 
@@ -63,7 +65,9 @@ namespace Pif::Emup
 	constexpr u32 FEATURE_PAD_PLAY = 1u << 2; // PAD_PLAY and PAD_STOP, and PAD_STATUSR's play fields
 	constexpr u32 FEATURE_PAD_SYNC = 1u << 3; // PLAY_SYNC, and PAD_STATUSR's sync fields
 	constexpr u32 FEATURE_PAD_PLUG = 1u << 4; // PAD_PLUG and PAD_ANALOG, and FLAG_UNPLUGGED
-	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET | FEATURE_PAD_PLAY | FEATURE_PAD_SYNC | FEATURE_PAD_PLUG;
+	constexpr u32 FEATURE_PAD_TYPE = 1u << 5; // PAD_TYPE, PAD_STATUSR's model and FLAG_SWAPPING
+	constexpr u32 FEATURES = FEATURE_PAD_STATUS | FEATURE_PAD_SET | FEATURE_PAD_PLAY | FEATURE_PAD_SYNC | FEATURE_PAD_PLUG |
+	                         FEATURE_PAD_TYPE;
 
 	struct Request
 	{
@@ -96,7 +100,7 @@ namespace Pif::Emup
 	enum PadType : u8
 	{
 		PAD_NONE = 0,
-		PAD_DUALSHOCK2 = 1,
+		PAD_DUALSHOCK2 = 1, // PCSX2's DualShock 2, presenting PadStatus::model
 		PAD_OTHER = 0x80, // one of PCSX2's other pads (guitar, jogcon, ...)
 	};
 	enum PadOwner : u8
@@ -111,6 +115,14 @@ namespace Pif::Emup
 		FLAG_CONFIG = 1 << 2, // in config mode (escape command 0x43)
 		FLAG_PLUGGING = 1 << 3, // still "being plugged in" after a swap (ejectTicks)
 		FLAG_UNPLUGGED = 1 << 4, // a host tool has unplugged the pad (PAD_PLUG): type is PAD_NONE
+		FLAG_SWAPPING = 1 << 5, // out for a PAD_TYPE swap: the new pad goes in by itself (with FLAG_UNPLUGGED)
+	};
+	// Which pad a DualShock 2 port presents (PAD_TYPE; Pad::DualShockModel's values).
+	enum PadModel : u8
+	{
+		MODEL_DUALSHOCK2 = 0,
+		MODEL_DUALSHOCK = 1,
+		MODEL_DIGITAL = 2,
 	};
 	constexpr size_t PAD_DATA_SIZE = 18;
 
@@ -149,6 +161,9 @@ namespace Pif::Emup
 		u8 owner = OWNER_HOST;
 		u8 id = 0xff; // the mode byte a poll answers with: 0x41, 0x73, 0x79, 0xf3; 0xff none
 		u8 flags = 0;
+		// The model the port's DualShock 2 presents, or will when it's plugged
+		// in; then u8 0. Older builds send 0 (MODEL_DUALSHOCK2), which they are.
+		u8 model = MODEL_DUALSHOCK2;
 		u32 vsync = 0; // vsyncs since the VM's last reset
 		// A poll's data bytes as the pad would send them now: the buttons (2,
 		// active low), rx, ry, lx, ly, then the 12 pressures in poll order (right,
@@ -232,4 +247,22 @@ namespace Pif::Emup
 		bool plugged;
 	};
 	std::optional<PadPlug> ParsePadPlug(const Request& req);
+
+	// PAD_TYPE asks with u8 port, u8 slot, u8 model (PadModel), u8 0: the pad the
+	// port presents. A pad in the port is swapped: taken out now, and a new one
+	// of the model (as from power-on) put in PAD_TYPE_SWAP_VSYNCS later, so the
+	// program sees the pad go and a new one come, as with a hand swap; the port
+	// shows FLAG_UNPLUGGED and FLAG_SWAPPING meanwhile. A PAD_PLUG in the gap ends
+	// it (plugging now, or leaving the port empty). An unplugged port takes the
+	// model at its next plug. The same model changes nothing. RESULT_NOPAD unless
+	// the settings give the port a DualShock 2; RESULT_INVAL for a model out of
+	// range. The tool's hold and play go on, as with PAD_PLUG. PAD_TYPER carries
+	// the PadStatus.
+	constexpr u32 PAD_TYPE_SWAP_VSYNCS = 30;
+	struct PadTypeRequest
+	{
+		PadRequest pad;
+		u8 model;
+	};
+	std::optional<PadTypeRequest> ParsePadType(const Request& req);
 } // namespace Pif::Emup

@@ -60,6 +60,7 @@ TEST(EmupTest, PadStatusLayout)
 	s.type = PAD_DUALSHOCK2;
 	s.id = 0x79;
 	s.flags = FLAG_ANALOG_LIGHT | FLAG_ANALOG_LOCKED;
+	s.model = MODEL_DIGITAL;
 	s.vsync = 0x01020304;
 	for (size_t i = 0; i < s.data.size(); i++)
 		s.data[i] = static_cast<u8>(0x80 + i);
@@ -67,7 +68,7 @@ TEST(EmupTest, PadStatusLayout)
 	const auto p = PadStatusPayload(s);
 	ASSERT_EQ(p.size(), 12 + PAD_DATA_SIZE + 36);
 	EXPECT_EQ((std::vector<u8>(p.begin(), p.begin() + 12)),
-		(std::vector<u8>{1, 0, PAD_DUALSHOCK2, OWNER_HOST, 0x79, 3, 0, 0, 4, 3, 2, 1}));
+		(std::vector<u8>{1, 0, PAD_DUALSHOCK2, OWNER_HOST, 0x79, 3, MODEL_DIGITAL, 0, 4, 3, 2, 1}));
 	EXPECT_EQ(p[12], 0x80);
 	EXPECT_EQ(p[12 + PAD_DATA_SIZE - 1], 0x80 + PAD_DATA_SIZE - 1);
 	EXPECT_EQ((std::vector<u8>(p.begin() + 12 + PAD_DATA_SIZE, p.end())),
@@ -110,6 +111,20 @@ TEST(EmupTest, PadPlugCarriesWhetherThePadGoesIn)
 	req.payload = {0, 0, 1};
 	EXPECT_FALSE(ParsePadPlug(req));
 	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_PLUGR, RESULT_NOPAD, 0, 0, 8, 0, 0, 0}));
+}
+
+TEST(EmupTest, PadTypeCarriesTheModel)
+{
+	auto req = *Parse(Pkt({CODE_PAD_TYPE, 0, 0, 0, 9, 0, 0, 0, 0, 0, MODEL_DUALSHOCK, 0}));
+	auto type = ParsePadType(req);
+	ASSERT_TRUE(type);
+	EXPECT_EQ(type->pad.port, 0);
+	EXPECT_EQ(type->model, MODEL_DUALSHOCK);
+	req.payload[2] = MODEL_DIGITAL + 1;
+	EXPECT_FALSE(ParsePadType(req));
+	req.payload = {0, 0, 1};
+	EXPECT_FALSE(ParsePadType(req));
+	EXPECT_EQ(Reply(req, RESULT_NOPAD), Pkt({CODE_PAD_TYPER, RESULT_NOPAD, 0, 0, 9, 0, 0, 0}));
 }
 
 TEST(EmupTest, PadPlayCarriesItsEntriesByCount)

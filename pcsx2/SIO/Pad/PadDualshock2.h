@@ -84,6 +84,8 @@ private:
 	u8 smallMotorLastConfig = 0xff;
 	// Used to store the last vibration mapping request the PS2 made for the large motor.
 	u8 largeMotorLastConfig = 0xff;
+	// The pad this one presents (Pad::SetModel, set when it's made).
+	Pad::DualShockModel model = Pad::DualShockModel::DualShock2;
 
 	// Since we reordered the buttons for better UI, we need to remap them here.
 	static constexpr std::array<u8, Inputs::LENGTH> bitmaskMapping = {{
@@ -109,6 +111,8 @@ private:
 	}};
 
 	void ConfigLog();
+	// Whether this model acknowledges the command.
+	bool Answers(Pad::Command command) const;
 
 	u8 Mystery(u8 commandByte);
 	u8 ButtonQuery(u8 commandByte);
@@ -155,7 +159,12 @@ public:
 	std::tuple<u8, u8> GetRawLeftAnalog() const override;
 	std::tuple<u8, u8> GetRawRightAnalog() const override;
 	u32 GetButtons() const override;
+	// The buttons as a poll sends them: a digital pad has no L3 or R3.
+	u32 GetPolledButtons() const;
 	u8 GetPressure(u32 index) const override;
+	Pad::DualShockModel GetModel() const { return model; }
+	// Before the pad's first command only: a model is a different pad.
+	void SetModel(Pad::DualShockModel model) { this->model = model; }
 	bool IsAnalogLightEnabled() const override;
 	bool IsAnalogLocked() const override;
 

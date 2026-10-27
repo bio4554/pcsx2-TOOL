@@ -65,6 +65,8 @@ namespace PadScript
 		// their play.
 		std::optional<Data> s_owned[2];
 		Script s_play[2];
+		// Vsyncs until a pad Type swapped out goes back in; 0 for none.
+		u32 s_swap[2];
 
 		PadDualshock2* Dualshock2(u8 port)
 		{
@@ -148,6 +150,16 @@ namespace PadScript
 			if (play.next == play.entries.size())
 				play.state = PLAY_DONE;
 		}
+
+		// The configured pad back into an unplugged port, sending the tool's state
+		// from its first answer.
+		void PlugBack(u8 port)
+		{
+			s_swap[port] = 0;
+			Pad::Plug(sioConvertPortAndSlotToPad(port, 0));
+			if (PadDualshock2* pad = Dualshock2(port); pad && s_owned[port])
+				Write(pad, *s_owned[port]);
+		}
 	} // namespace
 
 	Pif::Emup::PadStatus Status(u8 port, u8 slot)
@@ -156,6 +168,7 @@ namespace PadScript
 		PadStatus s;
 		s.port = port;
 		s.slot = slot;
+		s.model = static_cast<u8>(Pad::GetModel(sioConvertPortAndSlotToPad(port, slot)));
 		s.owner = port < std::size(s_owned) && slot == 0 && s_owned[port] ? OWNER_EMUP : OWNER_HOST;
 		s.vsync = g_FrameCount;
 		if (port < std::size(s_play) && slot == 0)
@@ -180,7 +193,7 @@ namespace PadScript
 		if (!pad || pad->GetType() == Pad::ControllerType::NotConnected)
 		{
 			if (Pad::IsUnplugged(sioConvertPortAndSlotToPad(port, slot)))
-				s.flags = FLAG_UNPLUGGED;
+				s.flags = FLAG_UNPLUGGED | (port < std::size(s_swap) && slot == 0 && s_swap[port] ? FLAG_SWAPPING : 0);
 			return s;
 		}
 		if (pad->GetType() != Pad::ControllerType::DualShock2)
@@ -197,7 +210,7 @@ namespace PadScript
 		          (pad->ejectTicks > 0 ? FLAG_PLUGGING : 0);
 
 		// The data bytes as PadDualshock2::Poll sends them: keep the two in step.
-		const u32 buttons = pad->GetButtons();
+		const u32 buttons = static_cast<PadDualshock2*>(pad)->GetPolledButtons();
 		const auto [lx, ly] = pad->GetRawLeftAnalog();
 		const auto [rx, ry] = pad->GetRawRightAnalog();
 		s.data[0] = static_cast<u8>((buttons >> 8) & 0xff);
@@ -280,28 +293,47 @@ namespace PadScript
 		const u8 unifiedSlot = sioConvertPortAndSlotToPad(port, slot);
 		if (!plugged)
 		{
+			// Ends a Type swap's gap with the port left empty.
+			s_swap[port] = 0;
 			Pad::Unplug(unifiedSlot);
 			return Pif::Emup::RESULT_OK;
 		}
 		if (EmuConfig.Pad.Ports[unifiedSlot].Type == Pad::ControllerType::NotConnected)
 			return Pif::Emup::RESULT_NOPAD;
-		Pad::Plug(unifiedSlot);
-		// The new pad sends the tool's state from its first answer.
-		if (PadDualshock2* pad = Dualshock2(port); pad && s_owned[port])
-			Write(pad, *s_owned[port]);
+		PlugBack(port);
 		return Pif::Emup::RESULT_OK;
 	}
 
 	Pif::Emup::Result Analog(u8 port, u8 slot)
 	{
 		PadDualshock2* pad = slot == 0 ? Dualshock2(port) : nullptr;
-		if (!pad)
+		if (!pad || pad->GetModel() == Pad::DualShockModel::Digital)
 			return Pif::Emup::RESULT_NOPAD;
 		// The host's own way in (its "Analog Toggle" binding), which keeps to the
 		// mode lock. Neither the tool's state nor Write holds the button, so the
 		// release is all that's left of it.
 		pad->Set(PadDualshock2::Inputs::PAD_ANALOG, 1.0f);
 		pad->Set(PadDualshock2::Inputs::PAD_ANALOG, 0.0f);
+		return Pif::Emup::RESULT_OK;
+	}
+
+	Pif::Emup::Result Type(u8 port, u8 slot, Pad::DualShockModel model)
+	{
+		if (port >= std::size(s_swap) || slot != 0)
+			return Pif::Emup::RESULT_NOPAD;
+		const u8 unifiedSlot = sioConvertPortAndSlotToPad(port, slot);
+		if (EmuConfig.Pad.Ports[unifiedSlot].Type != Pad::ControllerType::DualShock2)
+			return Pif::Emup::RESULT_NOPAD;
+		if (Pad::GetModel(unifiedSlot) == model)
+			return Pif::Emup::RESULT_OK;
+		Pad::SetModel(unifiedSlot, model);
+		// A swap by hand: the program sees the pad go, then a new one come, which
+		// its driver finds and sets up as it would at power-on.
+		if (!Pad::IsUnplugged(unifiedSlot))
+		{
+			Pad::Unplug(unifiedSlot);
+			s_swap[port] = Pif::Emup::PAD_TYPE_SWAP_VSYNCS;
+		}
 		return Pif::Emup::RESULT_OK;
 	}
 
@@ -332,6 +364,8 @@ namespace PadScript
 	{
 		for (u8 port = 0; port < std::size(s_owned); port++)
 		{
+			if (s_swap[port] && --s_swap[port] == 0)
+				PlugBack(port);
 			if (!s_owned[port])
 				continue;
 			Advance(s_play[port], *s_owned[port]);

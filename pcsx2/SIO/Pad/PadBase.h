@@ -28,6 +28,9 @@ protected:
 	size_t commandBytesReceived = 0;
 	bool analogLight = false;
 	bool analogLocked = false;
+	// The pad didn't acknowledge this transfer's command and sends nothing more
+	// (PadDualshock2's other models); Sio2 reports the port as it does an empty one.
+	bool silent = false;
 
 public: // Public members
 	PadBase(u8 unifiedSlot, size_t ejectTicks = 0);
@@ -40,6 +43,7 @@ public: // Public members
 	// The mode byte a poll answers with now (PadDualshock2::SendCommandByte), for dekko's pad status.
 	Pad::Mode GetMode() const { return currentMode; }
 	bool IsInConfig() const { return isInConfig; }
+	bool IsSilent() const { return silent; }
 	virtual const Pad::ControllerInfo& GetInfo() const = 0;
 
 	virtual void Set(u32 index, float value) = 0;
