@@ -30,7 +30,9 @@ namespace PadScript
 	// A part of a play (PAD_PLAY): loads it, and the last part starts it, frame
 	// 0 at the next Apply. Frames count vsyncs, so a play keeps to the program's
 	// time whatever the host's speed. RESULT_NOPAD if the port has no DualShock
-	// 2, RESULT_INVAL for a part out of order. Set and Detach end a play.
+	// 2, RESULT_INVAL for a part out of order. Set and Detach end a play. With
+	// PLAY_SYNC, frames count the changes of a u32 the program keeps (its frame
+	// counter), read at each vsync; RESULT_NOMEM if nothing's readable there.
 	Pif::Emup::Result Play(const Pif::Emup::PadPlayPart& part);
 	// Ends a play; the pad holds what it sends now, and stays the tool's.
 	void Stop(u8 port, u8 slot);

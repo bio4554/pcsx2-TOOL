@@ -63,15 +63,16 @@ TEST(EmupTest, PadStatusLayout)
 	s.vsync = 0x01020304;
 	for (size_t i = 0; i < s.data.size(); i++)
 		s.data[i] = static_cast<u8>(0x80 + i);
-	s.play = {PLAY_PLAYING, 0x100, 7, 3, 2, 0x20};
+	s.play = {PLAY_PLAYING, PLAY_FLAG_SYNC, 0x100, 7, 3, 2, 0x20, 0x00123df0, 5, 12};
 	const auto p = PadStatusPayload(s);
-	ASSERT_EQ(p.size(), 12 + PAD_DATA_SIZE + 24);
+	ASSERT_EQ(p.size(), 12 + PAD_DATA_SIZE + 36);
 	EXPECT_EQ((std::vector<u8>(p.begin(), p.begin() + 12)),
 		(std::vector<u8>{1, 0, PAD_DUALSHOCK2, OWNER_HOST, 0x79, 3, 0, 0, 4, 3, 2, 1}));
 	EXPECT_EQ(p[12], 0x80);
 	EXPECT_EQ(p[12 + PAD_DATA_SIZE - 1], 0x80 + PAD_DATA_SIZE - 1);
 	EXPECT_EQ((std::vector<u8>(p.begin() + 12 + PAD_DATA_SIZE, p.end())),
-		(std::vector<u8>{PLAY_PLAYING, 0, 0, 0, 0, 1, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0x20, 0, 0, 0}));
+		(std::vector<u8>{PLAY_PLAYING, PLAY_FLAG_SYNC, 0, 0, 0, 1, 0, 0, 7, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0, 0x20, 0,
+			0, 0, 0xf0, 0x3d, 0x12, 0, 5, 0, 0, 0, 12, 0, 0, 0}));
 }
 
 TEST(EmupTest, PadSetCarriesThePadThenTheDataBytes)
@@ -120,4 +121,22 @@ TEST(EmupTest, PadPlayCarriesItsEntriesByCount)
 	req.payload = {0, 0, PLAY_START, 0, 0, 0, 0, 0};
 	ASSERT_TRUE(ParsePadPlay(req));
 	EXPECT_TRUE(ParsePadPlay(req)->entries.empty());
+}
+
+TEST(EmupTest, PadPlaySyncPutsTheCounterBeforeTheEntries)
+{
+	std::vector<u8> payload = {1, 0, PLAY_FIRST | PLAY_START | PLAY_SYNC, 0, 1, 0, 0, 0, 0xf0, 0x3d, 0x12, 0};
+	payload.insert(payload.end(), {9, 0, 0, 0});
+	for (size_t i = 0; i < PAD_DATA_SIZE + 2; i++)
+		payload.push_back(static_cast<u8>(i));
+	Request req{CODE_PAD_PLAY, 7, payload};
+	const auto part = ParsePadPlay(req);
+	ASSERT_TRUE(part);
+	EXPECT_EQ(part->sync_addr, 0x00123df0u);
+	ASSERT_EQ(part->entries.size(), 1u);
+	EXPECT_EQ(part->entries[0].frame, 9u);
+	EXPECT_EQ(part->entries[0].data[1], 1);
+	req.payload.resize(8 + PLAY_ENTRY_SIZE); // without its address the length doesn't match
+	EXPECT_FALSE(ParsePadPlay(req));
+	EXPECT_EQ(VersionPayload()[4] & FEATURE_PAD_SYNC, FEATURE_PAD_SYNC);
 }

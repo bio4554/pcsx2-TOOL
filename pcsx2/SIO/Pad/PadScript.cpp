@@ -8,6 +8,7 @@
 #include "SIO/Pad/PadBase.h"
 #include "SIO/Pad/PadDualshock2.h"
 #include "SIO/Sio.h"
+#include "vtlb.h"
 
 #include <iterator>
 #include <optional>
@@ -55,6 +56,9 @@ namespace PadScript
 			size_t next = 0;
 			u32 frame = 0;
 			u32 start = 0;
+			std::optional<u32> sync; // the counter's EE address: frames count its changes
+			u32 sync_start = 0;
+			u32 sync_value = 0;
 		};
 
 		// The tool's pads, by port (slot 0 only): the data bytes they send, and
@@ -89,19 +93,42 @@ namespace PadScript
 			pad->SetRawAnalogs({data[4], data[5]}, {data[2], data[3]});
 		}
 
-		// One vsync of a play: the frame it is now, and the entries due by then.
+		// A u32 of EE memory through the EE's current mapping, without side effects:
+		// nullopt for an unmapped page or a register. Needs proper testing with
+		// TLB-mapped programs beyond the kernel's default mapping.
+		std::optional<u32> ReadEe(u32 addr)
+		{
+			u32 v;
+			if (!vtlb_memSafeReadBytes(addr, &v, sizeof(v)))
+				return std::nullopt;
+			return v;
+		}
+
+		// One vsync of a play: the frame it is now, and the entries due by then. A
+		// synced play moves a frame only when its counter has changed since the
+		// last vsync (by any amount), so a frame the program drops holds the line;
+		// while the counter can't be read, the play waits.
 		void Advance(Script& play, Data& data)
 		{
 			using namespace Pif::Emup;
+			const std::optional<u32> counter = play.sync ? ReadEe(*play.sync) : std::nullopt;
 			if (play.state == PLAY_ARMED)
 			{
 				play.state = PLAY_PLAYING;
 				play.start = g_FrameCount;
 				play.frame = 0;
+				if (counter)
+					play.sync_start = play.sync_value = *counter;
 			}
 			else if (play.state == PLAY_PLAYING || play.state == PLAY_DONE)
 			{
-				play.frame++;
+				if (!play.sync)
+					play.frame++;
+				else if (counter && *counter != play.sync_value)
+				{
+					play.frame++;
+					play.sync_value = *counter;
+				}
 			}
 			else
 			{
@@ -131,6 +158,13 @@ namespace PadScript
 			s.play.entries = static_cast<u32>(play.entries.size());
 			s.play.next = static_cast<u32>(play.next);
 			s.play.last = play.entries.empty() ? 0 : play.entries.back().frame;
+			if (play.sync)
+			{
+				s.play.flags = PLAY_FLAG_SYNC;
+				s.play.sync_addr = *play.sync;
+				s.play.sync_start = play.sync_start;
+				s.play.sync_value = play.sync_value;
+			}
 		}
 
 		PadBase* pad = Pad::GetPad(port, slot);
@@ -199,6 +233,13 @@ namespace PadScript
 		}
 		if ((part.flags & PLAY_START) && loaded == 0 && part.entries.empty())
 			return RESULT_INVAL; // nothing to play
+		if (part.flags & PLAY_SYNC)
+		{
+			if (!(part.flags & PLAY_START) || (part.sync_addr & 3))
+				return RESULT_INVAL;
+			if (!ReadEe(part.sync_addr))
+				return RESULT_NOMEM;
+		}
 
 		// A new play leaves the pad alone until it starts.
 		if (first)
@@ -210,6 +251,8 @@ namespace PadScript
 			// queue, which Host::PumpMessagesOnCPUThread empties just before it in
 			// the same vsync (or before the first vsync after a pause).
 			play.state = PLAY_ARMED;
+			if (part.flags & PLAY_SYNC)
+				play.sync = part.sync_addr;
 			s_owned[port] = s_released;
 			Write(Dualshock2(port), s_released);
 		}

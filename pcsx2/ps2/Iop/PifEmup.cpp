@@ -99,9 +99,10 @@ namespace Pif::Emup
 		Put32(p, s.vsync);
 		p.insert(p.end(), s.data.begin(), s.data.end());
 		p.push_back(s.play.state);
-		p.push_back(0);
+		p.push_back(s.play.flags);
 		Put16(p, 0);
-		for (const u32 v : {s.play.start, s.play.frame, s.play.entries, s.play.next, s.play.last})
+		for (const u32 v : {s.play.start, s.play.frame, s.play.entries, s.play.next, s.play.last, s.play.sync_addr,
+				 s.play.sync_start, s.play.sync_value})
 			Put32(p, v);
 		return p;
 	}
@@ -113,11 +114,12 @@ namespace Pif::Emup
 			return std::nullopt;
 		const std::vector<u8>& p = req.payload;
 		const u32 count = Get32(p, 4);
-		if (count > PLAY_MAX_ENTRIES || p.size() != 8 + count * PLAY_ENTRY_SIZE)
+		const size_t first = (p[2] & PLAY_SYNC) ? 12 : 8;
+		if (count > PLAY_MAX_ENTRIES || p.size() != first + count * PLAY_ENTRY_SIZE)
 			return std::nullopt;
-		PadPlayPart part{*pad, p[2], {}};
+		PadPlayPart part{*pad, p[2], first == 12 ? Get32(p, 8) : 0, {}};
 		part.entries.reserve(count);
-		for (size_t off = 8; off < p.size(); off += PLAY_ENTRY_SIZE)
+		for (size_t off = first; off < p.size(); off += PLAY_ENTRY_SIZE)
 		{
 			PlayEntry e{Get32(p, off), {}};
 			std::copy_n(p.begin() + off + 4, PAD_DATA_SIZE, e.data.begin());
